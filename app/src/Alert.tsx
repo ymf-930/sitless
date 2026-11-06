@@ -5,7 +5,7 @@ import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window'
 import { Button } from './ui/controls'
 import { setLangPref, t, useLang } from './i18n'
 import { pickAlertArt } from './art'
-import { randomAccent } from './accent'
+import { randomAccent, tintAccent } from './accent'
 
 const diag = (msg: string) => { invoke('diag', { msg }).catch(() => {}) }
 
@@ -50,9 +50,11 @@ export default function Alert() {
   const [line, setLine] = useState(() => Math.floor(Math.random() * LINES.length))
   const timer = useRef<number | undefined>(undefined)
 
-  // 警戒窗用自己的随机主色，不跟随主窗；每次弹出换一个
+  // 警戒窗用自己的随机主色，不跟随主窗；每次弹出换一个。
+  // 颜色落在整块面板上（而不是标签），所以按比例混到米白里，避免太扎眼。
   useEffect(() => {
     document.documentElement.style.setProperty('--pink', color)
+    document.documentElement.style.setProperty('--alert-bg', tintAccent(color))
   }, [color])
 
   const start = useCallback(() => {

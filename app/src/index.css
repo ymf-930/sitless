@@ -1053,7 +1053,8 @@ body[data-win='alert'] .alertwin {
   flex-direction: column;
   align-items: center;
   text-align: center;
-  background: #fbfbf5;
+  /* 面板底色由警戒窗按随机主色混出来（Alert.tsx 设 --alert-bg），没设时回落到米白 */
+  background: var(--alert-bg, #fbfbf5);
   border-radius: 24px;
   overflow: hidden;
   box-shadow: 0 8px 22px -10px rgba(20, 24, 26, 0.2), 0 0 0 1px rgba(20, 20, 20, 0.05);
@@ -1077,17 +1078,19 @@ body[data-win='alert'] .alertwin {
 }
 .alert-close:hover:not(:disabled) { background: rgba(12, 12, 12, 0.07); color: var(--ink); }
 .alert-close:disabled { opacity: 0.32; cursor: not-allowed; }
-.alert-tag { display: inline-flex; align-items: center; gap: 6px; height: 23px; padding: 0 11px; border-radius: var(--r-pill); background: var(--pink); font-size: 10.5px; font-weight: 700; letter-spacing: .08em; }
+.alert-tag { display: inline-flex; align-items: center; gap: 6px; height: 23px; padding: 0 11px; border-radius: var(--r-pill); background: rgba(255, 255, 255, 0.72); box-shadow: inset 0 0 0 1px rgba(20, 20, 20, 0.07); font-size: 10.5px; font-weight: 700; letter-spacing: .08em; }
 body[data-win='alert'] .alert-art { width: 104px; height: 104px; margin: 2px 0 0; flex: 0 0 auto; filter: none; }
 .alertwin h1 { font-size: 19px; font-weight: 600; letter-spacing: -.035em; margin-top: 2px; }
-.alert-sub { font-size: 12.5px; color: #6d6d64; line-height: 1.5; margin-top: 5px; }
+.alert-sub { font-size: 12.5px; color: #5f5f57; line-height: 1.5; margin-top: 5px; }
 .cd { width: 100%; margin-top: 13px; }
-.cd-bar { height: 5px; border-radius: var(--r-pill); background: #e6e6dc; overflow: hidden; }
+.cd-bar { height: 5px; border-radius: var(--r-pill); background: rgba(255, 255, 255, 0.7); overflow: hidden; }
 .cd-bar i { display: block; height: 100%; background: var(--ink); border-radius: var(--r-pill); transition: width .95s linear; }
-.cd-text { font-size: 10.5px; color: #7b7b72; margin-top: 6px; }
+.cd-text { font-size: 10.5px; color: #6b6b62; margin-top: 6px; }
 .cd-text b { font-size: 12px; color: var(--ink); }
 .alert-acts { width: 100%; display: flex; flex-direction: column; gap: 6px; margin-top: 11px; }
 .alert-acts .btn { width: 100%; height: 32px; font-size: 12px; font-family: inherit; border-radius: var(--r-pill); }
+/* 面板是有色的，禁用态改用半透明白，避免灰底发脏 */
+body[data-win='alert'] .btn:disabled { background: rgba(255, 255, 255, 0.55); color: rgba(20, 20, 20, 0.32); }
 
 /* ---------- 时间与范围 / 提醒窗口 ---------- */
 .pref-card {
