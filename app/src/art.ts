@@ -8,7 +8,6 @@ const RING = [
   '/art/ring-2.png',
   '/art/ring-3.png',
   '/art/ring-4.png',
-  '/art/ring-5.png',
 ]
 
 const ACT = [
