@@ -838,9 +838,18 @@ body[data-win='alert'] #root {
   background: var(--pink);
   color: var(--ink);
 }
-.dock-btn.is-mint {
-  background: var(--mint);
+/* 导航组：默认透明，当前页用浅灰底标出来，不与四个操作钮争色彩 */
+.dock-btn.is-nav {
+  color: #85857b;
+}
+.dock-btn.is-nav:hover {
+  background: rgba(12, 12, 12, 0.06);
   color: var(--ink);
+}
+.dock-btn.is-nav.is-on {
+  background: #edede4;
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px rgba(20, 20, 20, 0.06);
 }
 .dock-btn.is-accent {
   background: var(--lime);
@@ -909,8 +918,10 @@ body[data-win='alert'] #root {
 .next .card-eyebrow { display: inline-flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 700; letter-spacing: .08em; color: var(--muted); }
 .next h3 { font-size: 17px; margin-top: 6px; }
 .next-meta { font-size: 11px; color: var(--muted); margin-top: 3px; }
-.segs-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
-.segs { display: flex; gap: 4px; flex: 1; min-width: 0; }
+/* 刻度说明与摘要同一行、右对齐：比塞在条形末尾更像图注，也不额外占地 */
+.next-meta-row { display: flex; align-items: baseline; gap: 10px; }
+.next-meta-row .next-meta { flex: 1; min-width: 0; }
+.segs { display: flex; gap: 4px; margin-top: 12px; }
 .segs i { flex: 1; height: 8px; border-radius: var(--r-pill); background: #ecece4; }
 .segs i.on { background: var(--ink); }
 .segs-scale { flex: 0 0 auto; font-size: 9.5px; color: var(--muted-2); white-space: nowrap; }

@@ -275,7 +275,7 @@ function usePoll<T>(
 
 export default function App() {
   useLang()
-  const [view, setView] = useState<'today' | 'history' | 'settings'>('today')
+  const [view, setView] = useState<View>('today')
   const [status] = usePoll<Status>(
     'status', undefined, 1000, EMPTY_STATUS, DEMO ? DEMO_STATUS : undefined,
   )
@@ -376,7 +376,7 @@ export default function App() {
         {view === 'settings' && <SettingsView status={status} />}
       </div>
 
-      <Dock status={status} act={act} goSettings={() => setView('settings')} />
+      <Dock status={status} act={act} view={view} onNav={setView} />
 
       {toastAt > 0 && (
         <Toast
@@ -435,16 +435,25 @@ function Toast({
   )
 }
 
+type View = 'today' | 'history' | 'settings'
+
 function Dock({
   status,
   act,
-  goSettings,
+  view,
+  onNav,
 }: {
   status: Status
   act: (cmd: string, args?: Record<string, unknown>) => void
-  goSettings: () => void
+  view: View
+  onNav: (v: View) => void
 }) {
   const sound = () => act('update_config', { key: 'sound_on', value: status.sound_on ? '0' : '1' })
+  const NAV: { key: View; icon: IconName; title: string }[] = [
+    { key: 'today', icon: 'home', title: t('今日') },
+    { key: 'history', icon: 'chart', title: t('历史') },
+    { key: 'settings', icon: 'sliders', title: t('设置') },
+  ]
   return (
     <div className="dock-bar">
       <div className="dock-side left">
@@ -471,7 +480,6 @@ function Dock({
         <button className="dock-btn is-accent" title={t('已起身，清零重计')} onClick={() => act('dismiss')}>
           <Icon name="check" size={17} />
         </button>
-        <div className="dock-sep" />
         <button
           className="dock-btn is-pink"
           title={status.sound_on ? t('关闭提示音') : t('开启提示音')}
@@ -479,9 +487,20 @@ function Dock({
         >
           <Icon name={status.sound_on ? 'speaker' : 'speakerOff'} size={17} />
         </button>
-        <button className="dock-btn is-mint" title={t('设置')} onClick={goSettings}>
-          <Icon name="sliders" size={17} />
-        </button>
+
+        <div className="dock-sep" />
+
+        {NAV.map((item) => (
+          <button
+            key={item.key}
+            className={`dock-btn is-nav${view === item.key ? ' is-on' : ''}`}
+            title={item.title}
+            aria-current={view === item.key ? 'page' : undefined}
+            onClick={() => onNav(item.key)}
+          >
+            <Icon name={item.icon} size={17} />
+          </button>
+        ))}
       </div>
 
       <div className="dock-wing right" aria-hidden="true" />
@@ -593,14 +612,14 @@ function TodayView({
               {t('活动提醒 · 每 {n} 分钟', { n: minutes(status.activity_interval_ms) })}
             </span>
             <h3>{nextAct <= 0 ? t('下一次提醒马上就到') : t('下一次提醒在 {n} 分钟后', { n: nextAct })}</h3>
-            <div className="next-meta">{t('右上角轻提示，不抢焦点，不响铃打断。')}</div>
-            <div className="segs-row">
-              <div className="segs">
-                {Array.from({ length: segCount }, (_, i) => (
-                  <i key={i} className={i < passed ? 'on' : ''} />
-                ))}
-              </div>
+            <div className="next-meta-row">
+              <span className="next-meta">{t('右上角轻提示，不抢焦点，不响铃打断。')}</span>
               <span className="segs-scale">{t('每格 {n} 分钟', { n: segUnit })}</span>
+            </div>
+            <div className="segs">
+              {Array.from({ length: segCount }, (_, i) => (
+                <i key={i} className={i < passed ? 'on' : ''} />
+              ))}
             </div>
           </div>
           <img className="next-art" src={activityArt()} alt="" />
