@@ -1081,7 +1081,7 @@ body[data-win='alert'] .alertwin {
 body[data-win='alert'] .alert-art { width: 104px; height: 104px; margin: 2px 0 0; flex: 0 0 auto; filter: none; }
 .alertwin h1 { font-size: 19px; font-weight: 600; letter-spacing: -.035em; margin-top: 2px; }
 .alert-sub { font-size: 11px; color: #7b7b72; line-height: 1.45; max-width: 26ch; margin-top: 4px; }
-.cd { width: 100%; margin-top: 10px; }
+.cd { width: 100%; margin-top: 13px; }
 .cd-bar { height: 5px; border-radius: var(--r-pill); background: #e6e6dc; overflow: hidden; }
 .cd-bar i { display: block; height: 100%; background: var(--ink); border-radius: var(--r-pill); transition: width .95s linear; }
 .cd-text { font-size: 10.5px; color: #7b7b72; margin-top: 6px; }

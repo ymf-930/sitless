@@ -44,12 +44,17 @@ const EN: Record<string, string> = {
   '从第一次打开本应用算起': 'Since the app was first opened',
   '休息前确认': 'Confirm before break',
   '休息时段': 'Quiet hours',
+  '该活动一下了': 'Time to move around',
+  '肩颈和腰都该换个姿势。': 'Neck, shoulders and back all need a change of posture.',
+  '站起来伸个懒腰': 'Stand up and stretch',
+  '连续坐太久，注意力也会变差。': 'Sitting too long dulls your focus as well.',
+  '走两分钟再回来': 'Walk for two minutes',
+  '起身活动一下，血液循环会好很多。': 'A short walk gets your blood moving again.',
   '你已连续坐了很久。': "You've been sitting for a long time.",
   '保存': 'Save',
   '倒计时结束前不能清零重计；关闭和暂停随时可用':
     'Reset is locked until the countdown ends; close and pause stay available',
-  '倒计时结束前不能清零重计；赶时间可以跳过或暂停。':
-    'Reset is locked until the countdown ends. In a hurry? Skip or pause.',
+  '秒后可清零重计，也可直接暂停或跳过': 's until reset — or pause/skip right away',
   '偏好设置': 'Preferences',
   '全屏抑制': 'Fullscreen suppression',
   '全屏时抑制提醒': 'Suppress reminders in fullscreen',
@@ -159,7 +164,6 @@ const EN: Record<string, string> = {
   '离座判定': 'Away detection',
   '离座或回到座位时轻响一声': 'A short beep when you leave or return',
   '秒': 's',
-  '秒后可清零重计': 's until reset is available',
   '站起来走 1 分钟，或者做两个伸展。点「已起身」会把计时清零。':
     'Walk for a minute or do two stretches. Tap "Got up" to reset the timer.',
   '第': 'No.',

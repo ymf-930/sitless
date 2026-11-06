@@ -5,8 +5,17 @@ import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window'
 import { Button } from './ui/controls'
 import { setLangPref, t, useLang } from './i18n'
 import { pickAlertArt } from './art'
+import { randomAccent } from './accent'
 
 const diag = (msg: string) => { invoke('diag', { msg }).catch(() => {}) }
+
+/** 警戒文案池：标题 + 一句说明成对出现，每次弹窗换一组，别每回都是同一句 */
+const LINES: [string, string][] = [
+  ['起来走两步', '你已连续坐了很久。'],
+  ['该活动一下了', '肩颈和腰都该换个姿势。'],
+  ['站起来伸个懒腰', '连续坐太久，注意力也会变差。'],
+  ['走两分钟再回来', '起身活动一下，血液循环会好很多。'],
+]
 
 /** 卡片四周的透明边距，给 CSS 阴影留位置；与 index.css 的 --alert-pad 保持一致 */
 const CARD_PAD = 12
@@ -37,7 +46,14 @@ export default function Alert() {
   const [left, setLeft] = useState(10)
   const [busy, setBusy] = useState(false)
   const [art, setArt] = useState(() => pickAlertArt())
+  const [color, setColor] = useState(() => randomAccent())
+  const [line, setLine] = useState(() => Math.floor(Math.random() * LINES.length))
   const timer = useRef<number | undefined>(undefined)
+
+  // 警戒窗用自己的随机主色，不跟随主窗；每次弹出换一个
+  useEffect(() => {
+    document.documentElement.style.setProperty('--pink', color)
+  }, [color])
 
   const start = useCallback(() => {
     window.clearInterval(timer.current)
@@ -86,8 +102,10 @@ export default function Alert() {
     start()
     const un = listen('alert://reset', () => {
       setBusy(false)
-      // 每次弹出换一张插画
+      // 每次弹出换一张插画、一个主色和一组文案
       setArt((prev) => pickAlertArt(prev))
+      setColor((prev) => randomAccent(prev))
+      setLine((prev) => (prev + 1 + Math.floor(Math.random() * (LINES.length - 1))) % LINES.length)
       start()
     })
     return () => {
@@ -132,12 +150,8 @@ export default function Alert() {
 
       <img className="alert-art" src={art} alt="" />
 
-      <h1>{t('起来走两步')}</h1>
-      <p className="alert-sub">
-        {total > 0
-          ? t('倒计时结束前不能清零重计；赶时间可以跳过或暂停。')
-          : t('你已连续坐了很久。')}
-      </p>
+      <h1>{t(LINES[line][0])}</h1>
+      <p className="alert-sub">{t(LINES[line][1])}</p>
 
       <div className="cd">
         <div className="cd-bar">
@@ -146,7 +160,7 @@ export default function Alert() {
         <div className="cd-text">
           {ready ? t('可以清零重计了') : (
             <>
-              <b>{left}</b> {t('秒后可清零重计')}
+              <b>{left}</b> {t('秒后可清零重计，也可直接暂停或跳过')}
             </>
           )}
         </div>
