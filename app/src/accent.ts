@@ -1,5 +1,19 @@
-// 主色（--pink 角色）随机调色板：取自系统现有几种高亮色
-export const ACCENTS = ['#ffd9bf', '#d3f2c4', '#d9eefb', '#fbe7b4', '#c9ef9f']
+// 主色（--pink 角色）随机调色板：都是高明度低饱和的浅色，深色文字压得住。
+// 按色相铺开，避免相邻两个看起来是同一个颜色。
+export const ACCENTS = [
+  '#ffd9bf', // 蜜橙
+  '#fbe7b4', // 奶油黄
+  '#c9ef9f', // 青柠
+  '#d3f2c4', // 薄荷
+  '#cdeff0', // 水青
+  '#d9eefb', // 天蓝
+  '#dcdcf7', // 蓝紫
+  '#e8dcfa', // 薰衣草
+  '#fbdde6', // 樱粉
+  '#f2dced', // 藕荷
+  '#f0e3d2', // 燕麦
+  '#dfe8d5', // 鼠尾草
+]
 const KEY = 'sitless.accent'
 
 /** 随机取一个主色；传 exclude 可避免连续两次撞色 */
