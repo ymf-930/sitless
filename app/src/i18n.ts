@@ -15,7 +15,7 @@ const EN: Record<string, string> = {
   '{n} 秒': '{n} s',
   '{n} 秒后才可关闭。': 'Can be dismissed after {n} s.',
   '{n} 项': '{n} items',
-  '· 今日目标 {n}': '· Daily goal {n}',
+  '今日目标 {n}': 'Daily goal {n}',
   '一': 'Mon',
   '七天合计': '7-day total',
   '三': 'Wed',

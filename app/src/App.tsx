@@ -629,7 +629,7 @@ function TodayView({
             </span>
             <b>{rises}</b>
             <span>{t('起身次数')}</span>
-            <em className="tile-tag">{t('· 今日目标 {n}', { n: status.daily_goal })}</em>
+            <em className="tile-tag">{t('今日目标 {n}', { n: status.daily_goal })}</em>
           </div>
         </div>
       </div>
