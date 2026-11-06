@@ -20,7 +20,6 @@ const ACT = [
   '/art/art-6.png',
   '/art/art-7.png',
   '/art/art-8.png',
-  '/art/art-9.png',
 ]
 
 function pick(pool: string[], exclude?: string): string {
