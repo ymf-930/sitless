@@ -141,6 +141,7 @@ const EN: Record<string, string> = {
   '次封顶': 'max',
   '段': 'segments',
   '每日目标': 'Daily goal',
+  '每格 {n} 分钟': '{n} min per block',
   '每隔多久做一次轻提醒': 'How often to show a gentle reminder',
   '活动提醒 · 每 {n} 分钟': 'Activity reminder · every {n} min',
   '活动提醒间隔': 'Activity reminder interval',

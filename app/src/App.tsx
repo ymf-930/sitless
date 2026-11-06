@@ -5,6 +5,7 @@ import { listen, emit } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { Icon, type IconName } from './icons'
 import { currentLang, t, useLang, setLangPref } from './i18n'
+import { activityArt, ringArt } from './art'
 
 type Status = {
   idle_threshold_ms: number
@@ -126,6 +127,15 @@ function hm(ms: number) {
 
 function minutes(ms: number) {
   return Math.max(0, Math.round(ms / 60000))
+}
+
+/**
+ * 活动提醒进度格：按间隔选粒度，让格数稳定在 7–15 根。
+ * 一格一分钟只在小间隔下可读，45 分钟会变成 45 根细条，120 分钟连间距都放不下。
+ */
+function segSpec(intervalMin: number) {
+  const unit = intervalMin <= 15 ? 1 : intervalMin <= 30 ? 2 : intervalMin <= 60 ? 5 : 10
+  return { unit, count: Math.max(1, Math.ceil(intervalMin / unit)) }
 }
 
 function weekday(iso: string) {
@@ -463,11 +473,11 @@ function Dock({
         </button>
         <div className="dock-sep" />
         <button
-          className={`dock-btn is-pink${status.sound_on ? '' : ' is-muted'}`}
+          className="dock-btn is-pink"
           title={status.sound_on ? t('关闭提示音') : t('开启提示音')}
           onClick={sound}
         >
-          <Icon name="speaker" size={17} />
+          <Icon name={status.sound_on ? 'speaker' : 'speakerOff'} size={17} />
         </button>
         <button className="dock-btn is-mint" title={t('设置')} onClick={goSettings}>
           <Icon name="sliders" size={17} />
@@ -497,7 +507,7 @@ function TodayView({
   const C = 2 * Math.PI * R
   const nextAct = minutes(status.next_activity_ms)
   const actTotal = Math.max(1, minutes(status.activity_interval_ms))
-  const segCount = 12
+  const { unit: segUnit, count: segCount } = segSpec(actTotal)
   const passed = Math.round(Math.min(1, Math.max(0, 1 - nextAct / actTotal)) * segCount)
   const ordered = [...segs].reverse()
   const rises = segs.filter((s) => s.closed).length
@@ -551,7 +561,7 @@ function TodayView({
             </div>
           </div>
 
-          <img className="alert-art" src="/sit.png" alt="" />
+          <img className="alert-art" src={ringArt()} alt="" />
 
           <div className="ring">
             <svg width="124" height="124" viewBox="0 0 124 124">
@@ -584,13 +594,16 @@ function TodayView({
             </span>
             <h3>{nextAct <= 0 ? t('下一次提醒马上就到') : t('下一次提醒在 {n} 分钟后', { n: nextAct })}</h3>
             <div className="next-meta">{t('右上角轻提示，不抢焦点，不响铃打断。')}</div>
-            <div className="segs">
-              {Array.from({ length: segCount }, (_, i) => (
-                <i key={i} className={i < passed ? 'on' : ''} />
-              ))}
+            <div className="segs-row">
+              <div className="segs">
+                {Array.from({ length: segCount }, (_, i) => (
+                  <i key={i} className={i < passed ? 'on' : ''} />
+                ))}
+              </div>
+              <span className="segs-scale">{t('每格 {n} 分钟', { n: segUnit })}</span>
             </div>
           </div>
-          <img className="next-art" src="/move.png" alt="" />
+          <img className="next-art" src={activityArt()} alt="" />
         </section>
 
         <div className="tiles">

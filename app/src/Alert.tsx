@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window'
 import { Button } from './ui/controls'
 import { setLangPref, t, useLang } from './i18n'
+import { pickAlertArt } from './art'
 
 const diag = (msg: string) => { invoke('diag', { msg }).catch(() => {}) }
 
@@ -35,6 +36,7 @@ export default function Alert() {
   const [total, setTotal] = useState(10)
   const [left, setLeft] = useState(10)
   const [busy, setBusy] = useState(false)
+  const [art, setArt] = useState(() => pickAlertArt())
   const timer = useRef<number | undefined>(undefined)
 
   const start = useCallback(() => {
@@ -84,6 +86,8 @@ export default function Alert() {
     start()
     const un = listen('alert://reset', () => {
       setBusy(false)
+      // 每次弹出换一张插画
+      setArt((prev) => pickAlertArt(prev))
       start()
     })
     return () => {
@@ -126,7 +130,7 @@ export default function Alert() {
 
       <span className="alert-tag">{t('久坐警戒')}</span>
 
-      <img className="alert-art" src="/alert-art.png" alt="" />
+      <img className="alert-art" src={art} alt="" />
 
       <h1>{t('起来走两步')}</h1>
       <p className="alert-sub">

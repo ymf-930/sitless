@@ -145,7 +145,7 @@
 | 层 | 技术 |
 | --- | --- |
 | 桌面框架 | Tauri 2.12.5（`tray-icon`、`image-png`） |
-| 前端 | React 19 + TypeScript ~7.0 + Vite 8，样式为手写 `index.css` |
+| 前端 | React 19 + TypeScript ~7.0 + Vite 8，样式为手写 `index.css`，图标用 `lucide-react` |
 | 后端 | Rust（edition 2024，`rust-version = 1.90`），`rusqlite` 内置 SQLite、`windows-sys` 调系统 API |
 | 包管理 | pnpm（`app/pnpm-lock.yaml`）、Cargo（`app/src-tauri/Cargo.lock`） |
 | 代码检查 | oxlint（不是 ESLint） |
@@ -243,9 +243,9 @@ pnpm exec tauri dev
 久坐提醒/
 ├── README.md                 ← 本文件
 ├── app/                      ← 真正的工程目录（Tauri + React）
-│   ├── src/                  ← 前端：main.tsx / App.tsx / Alert.tsx / TrayMenu.tsx / i18n.ts / ui/ / index.css
+│   ├── src/                  ← 前端：main.tsx / App.tsx / Alert.tsx / TrayMenu.tsx / i18n.ts / art.ts / icons.tsx / ui/ / index.css
 │   ├── src-tauri/            ← 后端：src/*.rs、tauri.conf.json、capabilities/、icons/、sounds/
-│   ├── public/               ← 运行时插画：logo/sit/move/cal/alert-art.png
+│   ├── public/               ← 运行时静态资源：logo.png、cal.png、art/（14 张 3D 人物插画）
 │   ├── scripts/              ← 可复用脚本：make_sounds / make_logo / export_icons / check_classes
 │   ├── dist/                 ← 前端构建产物（会被打进 exe）
 │   └── package.json / pnpm-lock.yaml
@@ -346,7 +346,9 @@ main.rs → lib.rs(run)
 | 设置项可配范围 | `app/src-tauri/src/runtime.rs` `update_config()` 开头的 `(lo, hi)` |
 | 设置页滑块 | `app/src/App.tsx` 设置视图（`alert_min` / `activity_min` / `idle_min`） |
 | 提醒文案 | `runtime.rs` 轻提醒与汇总、`reminder.rs` 弹窗标题、`App.tsx` Toast 卡片、`Alert.tsx` 警戒窗 |
-| 界面与配色 | `app/src/index.css`（开头是设计变量，主色由 `accent.ts` 运行时注入）、`app/src/icons.tsx`、`app/public/*.png` |
+| 界面与配色 | `app/src/index.css`（开头是设计变量，主色由 `accent.ts` 运行时注入） |
+| 图标 | `app/src/icons.tsx`：语义名 → `lucide-react` 组件的映射，调用方只写 `<Icon name="pause" />` |
+| 插画 | 图片放 `app/public/art/`，池子在 `app/src/art.ts`：圆环卡 5 张、活动提醒与警戒窗 9 张，各自随机 |
 | 窗口尺寸 / 产品名 | `app/src-tauri/tauri.conf.json`；改名还需同步 `index.html`、`App.tsx`、`lib.rs`、`runtime.rs` 多处 |
 | 托盘菜单 | `app/src/TrayMenu.tsx`（菜单项）+ `lib.rs` `tray_action`（分发） |
 | 提示音 | `app/src-tauri/sounds/*.wav` + `sound.rs`（`include_bytes!` 编译进二进制） |
