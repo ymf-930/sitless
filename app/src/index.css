@@ -11,6 +11,7 @@
   --lime: #c9ef9f;
   --sky: #d9eefb;
   --butter: #fbe7b4;
+  --lilac: #f2dced;
 
   /* 表面与描边 */
   --surface: #fff;
@@ -261,7 +262,7 @@ body[data-win='alert'] #root {
 
 .ring-mid span {
   font-size: 9.5px;
-  color: #7a5c4a;
+  color: rgba(12, 12, 12, 0.55);
 }
 
 /* ---------- 轻提醒卡 ---------- */
@@ -950,7 +951,7 @@ body[data-win='alert'] #root {
 .tl-mint { background: #e9f9df; }
 .tl-sky { background: var(--sky); }
 .tl-butter { background: #fdf3d7; }
-.tl-lilac { background: #fdeede; }
+.tl-lilac { background: var(--lilac); }
 .tl-top { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
 .tl-ico { display: inline-flex; color: rgba(12,12,12,.55); flex: 0 0 auto; }
 .tl-top b { font-size: 10.5px; font-weight: 700; letter-spacing: .05em; }
