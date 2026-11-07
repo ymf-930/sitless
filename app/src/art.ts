@@ -19,6 +19,9 @@ const ACT = [
   '/art/art-6.png',
   '/art/art-7.png',
   '/art/art-8.png',
+  // 两张循环走动的小动图（150×150、透明底），混在静图里换换气
+  '/art/art-9.gif',
+  '/art/art-10.gif',
 ]
 
 function pick(pool: string[], exclude?: string): string {

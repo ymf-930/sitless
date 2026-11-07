@@ -13,7 +13,7 @@ use chrono::Local;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_autostart::ManagerExt;
 
-use crate::db::{Db, DayRow, Today};
+use crate::db::{Db, Today};
 use crate::locale;
 use crate::platform;
 use crate::prefs::Preferences;
@@ -32,11 +32,30 @@ fn show_main(app: &AppHandle) {
     }
 }
 
+/// 续接上一段时，段的起点在本次进程启动之前，没法用单调时钟反推，
+/// 所以把旧起点原样带过来，落库时直接沿用（保持同一行，不产生新段）。
+#[derive(Clone, Debug)]
+pub struct ResumeAnchor {
+    pub started_at: String,
+    pub day: String,
+    pub sitting_ms: Ms,
+}
+
+/// 上次留下的未闭合段还能不能续上：离开时长不超过 gap 就算同一段坐姿。
+/// 时间解析不出来（老数据缺列）一律按「不能续」处理 —— 宁可多切一段，也不要凭空累加。
+pub fn can_resume(updated_at: &str, now: chrono::NaiveDateTime, gap: Ms) -> bool {
+    crate::db::parse_at(updated_at)
+        .map(|t| (now - t).num_milliseconds().max(0) as Ms <= gap)
+        .unwrap_or(false)
+}
+
 #[derive(Clone, Debug)]
 pub struct RuntimeConfig {
     pub state: Config,
     pub idle_threshold: Ms,
     pub prefs: Preferences,
+    /// 能续上的上一段（见 lib.rs 的间隔判定）
+    pub resume: Option<ResumeAnchor>,
 }
 
 impl Default for RuntimeConfig {
@@ -45,6 +64,7 @@ impl Default for RuntimeConfig {
             state: Config::default(),
             idle_threshold: 3 * MIN,
             prefs: Preferences::default(),
+            resume: None,
         }
     }
 }
@@ -95,12 +115,37 @@ impl RuntimeConfig {
     }
 }
 
+/// 首页与托盘共用的「为什么现在不提醒」判定。
+/// 优先级：手动暂停 > 休息日 > 免打扰 > 全屏 > 离座。
+fn silence_state(p: &Preferences, paused: bool, present: bool, fullscreen: bool) -> (String, String) {
+    if paused {
+        return ("paused".into(), String::new());
+    }
+    if !p.workday_now() {
+        return ("offday".into(), String::new());
+    }
+    if let Some(end) = p.quiet_end_now() {
+        return ("quiet".into(), end);
+    }
+    if fullscreen {
+        return ("fullscreen".into(), String::new());
+    }
+    if !present {
+        return ("away".into(), String::new());
+    }
+    ("on".into(), String::new())
+}
+
 pub struct Engine {
     tx: Sender<Event>,
     timer: Arc<Mutex<Timer>>,
     idle_ms: Arc<AtomicU64>,
     prefs: Arc<Mutex<Preferences>>,
     db: Arc<Db>,
+    /// 进程启动时的墙钟。落库时间一律用 boot_wall + 单调毫秒换算，
+    /// 不能每次落库重新取 Local::now()：墙钟被 NTP 校准或系统睡眠唤醒后，
+    /// 同一段会算出不同的起点，轻则重复成两段，重则主键冲突覆盖。
+    boot_wall: chrono::DateTime<Local>,
 }
 
 impl Engine {
@@ -108,33 +153,40 @@ impl Engine {
         let _ = self.tx.send(ev);
     }
 
-    /// 退出前结算当前段，否则下次启动会多出一条没闭合的段
+    /// 退出前把当前段写回库里，但保持未闭合。
+    /// 原来这里写成 closed=1 + exit，等于每次重启都把一段正在进行的坐姿切断；
+    /// 保持 open 后，下次启动在允许的间隔内可以直接续上（见 spawn 里的 resume）。
     pub fn finalize(&self) {
-        let Some((sitting, continuous)) = self.timer.lock().unwrap().take_segment() else {
+        let Some((start, sitting)) = self.timer.lock().unwrap().take_segment() else {
             return;
         };
-        let now_wall = Local::now();
-        let start_wall = now_wall - chrono::Duration::milliseconds(sitting as i64);
-        let started_at = start_wall.format("%Y-%m-%dT%H:%M:%S").to_string();
-        let day = start_wall.format("%Y-%m-%d").to_string();
-        let now_iso = now_wall.format("%Y-%m-%dT%H:%M:%S").to_string();
+        let started_at = wall_at(self.boot_wall, start)
+            .format(ISO_MS)
+            .to_string();
+        let day = wall_at(self.boot_wall, start).format("%Y-%m-%d").to_string();
+        let now_iso = wall_at(self.boot_wall, start + sitting)
+            .format(ISO_MS)
+            .to_string();
         if let Err(e) = self.db.save_segment(
             &started_at,
             &day,
             sitting as i64,
-            continuous as i64,
-            true,
+            sitting as i64,
+            false,
+            "open",
             &now_iso,
         ) {
             log::error!("退出结算失败: {e}");
         } else {
-            log::info!("[退出结算] sitting={sitting}");
+            log::info!("[退出] 保留未闭合段 sitting={sitting}（下次启动可续接）");
         }
     }
 
     pub fn snapshot(&self) -> Snapshot {
         let t = self.timer.lock().unwrap();
         let p = self.prefs.lock().unwrap();
+        let (remind_state, resume_hint) =
+            silence_state(&*p, t.is_paused(), t.is_present(), t.is_fullscreen());
         Snapshot {
             idle_threshold_ms: self.idle_ms.load(Ordering::Relaxed),
             sitting_ms: t.sitting(),
@@ -158,6 +210,8 @@ impl Engine {
             volume: p.volume,
             language: p.language.clone(),
             fullscreen_suppress: p.fullscreen_suppress,
+            remind_state,
+            resume_hint,
         }
     }
 }
@@ -186,6 +240,10 @@ pub struct Snapshot {
     pub volume: u8,
     pub language: String,
     pub fullscreen_suppress: bool,
+    /// 提醒呈现状态：on / paused / offday / quiet / fullscreen / away
+    pub remind_state: String,
+    /// 免打扰时段的结束时刻 HH:MM，其余状态为空
+    pub resume_hint: String,
 }
 
 #[tauri::command]
@@ -370,9 +428,9 @@ pub fn export_csv(
         ));
     }
     out.push_str(if en {
-        "\nSegments\nStarted,Date,Sitting (min),Continuous (min),Closed\n"
+        "\nSegments\nStarted,Date,Sitting (min),Continuous (min),Closed,End reason\n"
     } else {
-        "\n段明细\n开始时间,日期,坐姿时长(分钟),连续时长(分钟),已结算\n"
+        "\n段明细\n开始时间,日期,坐姿时长(分钟),连续时长(分钟),已结算,结束原因\n"
     });
     for s in &segs {
         let closed = match (en, s.closed) {
@@ -382,12 +440,13 @@ pub fn export_csv(
             (false, false) => "否",
         };
         out.push_str(&format!(
-            "{},{},{},{},{}\n",
+            "{},{},{},{},{},{}\n",
             cell(&s.started_at),
             cell(&s.day),
             mins(s.sitting_ms),
             mins(s.continuous_ms),
             closed,
+            cell(&s.end_reason),
         ));
     }
 
@@ -406,6 +465,90 @@ pub fn export_csv(
     let path = dir.join(name);
     std::fs::write(&path, out).map_err(|e| e.to_string())?;
     log::info!("[导出] path={}", path.display());
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// 把排障需要的信息打成单个文本文件，写到下载目录
+#[tauri::command]
+pub fn export_diagnostics(
+    app: AppHandle,
+    db: tauri::State<'_, Arc<Db>>,
+    engine: tauri::State<'_, Engine>,
+) -> Result<String, String> {
+    use std::fmt::Write as _;
+    let now = Local::now();
+    let mut out = String::new();
+    let _ = writeln!(out, "走走 · 诊断信息");
+    let _ = writeln!(out, "生成时间: {}", now.format("%Y-%m-%d %H:%M:%S %z"));
+    let _ = writeln!(out, "版本: {} / {} {}", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH);
+
+    let _ = writeln!(out, "\n=== 运行时快照 ===");
+    match serde_json::to_string_pretty(&engine.snapshot()) {
+        Ok(s) => out.push_str(&s),
+        Err(e) => { let _ = writeln!(out, "序列化失败: {e}"); }
+    }
+    out.push('\n');
+
+    let _ = writeln!(out, "\n=== 设置 ===");
+    match db.settings() {
+        Ok(map) => {
+            let mut keys: Vec<_> = map.keys().cloned().collect();
+            keys.sort();
+            for k in keys { let _ = writeln!(out, "{k} = {}", map[&k]); }
+        }
+        Err(e) => { let _ = writeln!(out, "读取失败: {e}"); }
+    }
+
+    let _ = writeln!(out, "\n=== 近 7 天提醒（最新 200 条） ===");
+    match db.reminder_recent(7) {
+        Ok(rows) => for r in rows { let _ = writeln!(out, "{r}"); },
+        Err(e) => { let _ = writeln!(out, "读取失败: {e}"); }
+    }
+
+    let _ = writeln!(out, "\n=== 最近段（最新 20 条） ===");
+    match db.all_segments() {
+        Ok(segs) => for s in segs.into_iter().rev().take(20) {
+            let _ = writeln!(out, "{} day={} sitting={}ms closed={} reason={}",
+                s.started_at, s.day, s.sitting_ms, s.closed, s.end_reason);
+        },
+        Err(e) => { let _ = writeln!(out, "读取失败: {e}"); }
+    }
+
+    let _ = writeln!(out, "\n=== 最近日志（尾部 64KB） ===");
+    match app.path().app_log_dir() {
+        Ok(dir) => {
+            let mut files: Vec<_> = std::fs::read_dir(&dir).ok()
+                .map(|it| it.filter_map(|e| e.ok().map(|e| e.path()))
+                    .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("log")).collect())
+                .unwrap_or_default();
+            files.sort();
+            match files.last() {
+                Some(last) => match std::fs::read(last) {
+                    Ok(bytes) => {
+                        let start = bytes.len().saturating_sub(64 * 1024);
+                        out.push_str(&String::from_utf8_lossy(&bytes[start..]));
+                    }
+                    Err(e) => { let _ = writeln!(out, "读取日志失败: {e}"); }
+                },
+                None => { let _ = writeln!(out, "（暂无日志文件）"); }
+            }
+        }
+        Err(e) => { let _ = writeln!(out, "日志目录不可用: {e}"); }
+    }
+
+    let dir = app.path().download_dir()
+        .or_else(|_| app.path().app_data_dir())
+        .map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let stamp = now.format("%Y%m%d-%H%M%S");
+    let name = if locale::is_en() {
+        format!("zouzou-diagnostics-{stamp}.txt")
+    } else {
+        format!("走走-诊断-{stamp}.txt")
+    };
+    let path = dir.join(name);
+    std::fs::write(&path, out).map_err(|e| e.to_string())?;
+    log::info!("[诊断导出] path={}", path.display());
     Ok(path.to_string_lossy().into_owned())
 }
 
@@ -456,16 +599,31 @@ pub fn clear_history(
 #[tauri::command]
 pub fn segments(db: tauri::State<'_, Arc<Db>>) -> Vec<crate::db::SegmentRow> {
     let day = Local::now().format("%Y-%m-%d").to_string();
-    db.segments(&day, 8).unwrap_or_default()
+    // 右栏时间线整段交给前端滚动，条数上限给足，避免「起身次数」被截断
+    db.segments(&day, 60).unwrap_or_default()
 }
 
 #[tauri::command]
-pub fn trend(db: tauri::State<'_, Arc<Db>>, days: u32) -> Vec<DayRow> {
+pub fn trend(db: tauri::State<'_, Arc<Db>>, days: u32) -> Vec<crate::db::TrendRow> {
     let n = days.max(1) as i64;
     let since = (Local::now().date_naive() - chrono::Duration::days(n - 1))
         .format("%Y-%m-%d")
         .to_string();
     db.trend(&since).unwrap_or_default()
+}
+
+/// 历史页时段热力条：0..23 时各自累计的坐姿毫秒。
+/// 区间和统计卡一致，只覆盖已经走完的日子（不含今天），否则今天那格会随时间变深。
+#[tauri::command]
+pub fn hourly(db: tauri::State<'_, Arc<Db>>, days: u32) -> Vec<i64> {
+    let n = days.max(1) as i64;
+    let today = Local::now().date_naive();
+    let since = (today - chrono::Duration::days(n))
+        .format("%Y-%m-%d")
+        .to_string();
+    let before = today.format("%Y-%m-%d").to_string();
+    db.hourly(&since, &before)
+        .unwrap_or_else(|_| vec![0; 24])
 }
 
 #[tauri::command]
@@ -475,8 +633,23 @@ pub fn diag(msg: String) {
 
 pub fn spawn(app: AppHandle, mut rc: RuntimeConfig, db: Arc<Db>) -> Engine {
     rc.with_env();
+    let boot_wall = Local::now();
     let (tx, rx) = mpsc::channel::<Event>();
+    let initial_active = rc.prefs.active_now();
     let timer = Arc::new(Mutex::new(Timer::new(0, rc.state)));
+    let anchor = rc.resume.clone();
+    {
+        let mut t = timer.lock().unwrap();
+        let _ = t.apply(Event::Active { on: initial_active });
+        if let Some(a) = &anchor {
+            t.resume(a.sitting_ms);
+            log::info!(
+                "[续接] 上一段 {} 已坐 {} 分钟，计时与提醒节拍接着走",
+                a.started_at,
+                a.sitting_ms / MIN
+            );
+        }
+    }
     let shared = Arc::clone(&timer);
 
     let idle_shared = Arc::new(AtomicU64::new(rc.idle_threshold));
@@ -492,6 +665,7 @@ pub fn spawn(app: AppHandle, mut rc: RuntimeConfig, db: Arc<Db>) -> Engine {
         let mut last_date = Local::now().date_naive();
         let mut present = true;
         let mut suppressed = false;
+        let mut last_active = initial_active;
 
         loop {
             thread::sleep(Duration::from_secs(1));
@@ -558,16 +732,27 @@ pub fn spawn(app: AppHandle, mut rc: RuntimeConfig, db: Arc<Db>) -> Engine {
                 );
             }
 
+            // 工作日 / 免打扰切换必须在推进时间之前投递，否则抑制期会消耗重申配额
+            let allow = prefs_in_thread.lock().unwrap().active_now();
+            if allow != last_active {
+                last_active = allow;
+                log::info!("[提醒开关] active={allow}");
+                fx.extend(shared.lock().unwrap().apply(Event::Active { on: allow }));
+            }
+
             fx.extend(shared.lock().unwrap().apply(Event::Tick { now }));
 
             dispatch(
                 &app,
                 &shared,
                 fx,
+                boot_wall,
                 now,
+                anchor.as_ref(),
                 fast,
                 &db_in_thread,
                 &prefs_in_thread,
+                allow,
             );
         }
     });
@@ -578,23 +763,48 @@ pub fn spawn(app: AppHandle, mut rc: RuntimeConfig, db: Arc<Db>) -> Engine {
         idle_ms: idle_shared,
         prefs: prefs_shared,
         db,
+        boot_wall,
     }
 }
 
+/// 单调毫秒 → 墙钟，基准是进程启动那一刻（不随 NTP 校准漂移）
+fn wall_at(boot: chrono::DateTime<Local>, ms: Ms) -> chrono::DateTime<Local> {
+    boot + chrono::Duration::milliseconds(ms as i64)
+}
+
+/// 落库用的时间格式：毫秒精度。段起点必须唯一到毫秒，否则同一秒内
+/// 结束旧段 + 开始新段会被同一个主键覆盖掉一段。
+const ISO_MS: &str = "%Y-%m-%dT%H:%M:%S%.3f";
+
 /// 单调时间换算成墙钟后落库
-fn persist(db: &Db, now_ms: Ms, start_ms: Ms, sitting: Ms, continuous: Ms, closed: bool) {
-    let now_wall = Local::now();
-    let start_wall =
-        now_wall - chrono::Duration::milliseconds(now_ms.saturating_sub(start_ms) as i64);
-    let started_at = start_wall.format("%Y-%m-%dT%H:%M:%S").to_string();
-    let day = start_wall.format("%Y-%m-%d").to_string();
-    let now_iso = now_wall.format("%Y-%m-%dT%H:%M:%S").to_string();
+#[allow(clippy::too_many_arguments)]
+fn persist(
+    db: &Db,
+    boot_wall: chrono::DateTime<Local>,
+    now_ms: Ms,
+    start_ms: Ms,
+    sitting: Ms,
+    continuous: Ms,
+    closed: bool,
+    end_reason: &str,
+    anchor: Option<&ResumeAnchor>,
+) {
+    // 续接段的起点早于本进程启动，只能沿用旧起点；这是同一行，不能再新开一段
+    let (started_at, day) = match anchor.filter(|_| start_ms == 0) {
+        Some(a) => (a.started_at.clone(), a.day.clone()),
+        None => {
+            let s = wall_at(boot_wall, start_ms);
+            (s.format(ISO_MS).to_string(), s.format("%Y-%m-%d").to_string())
+        }
+    };
+    let now_iso = wall_at(boot_wall, now_ms).format(ISO_MS).to_string();
     if let Err(e) = db.save_segment(
         &started_at,
         &day,
         sitting as i64,
         continuous as i64,
         closed,
+        end_reason,
         &now_iso,
     ) {
         log::error!("落库失败: {e}");
@@ -610,17 +820,17 @@ fn light_reminder(app: &AppHandle, p: &Preferences) {
             show_main(app);
             let _ = app.emit("reminder://toast", &title);
         }
-        2 => reminder::show_alert(app),
+        2 => reminder::show_light(app), // 置顶窗档：不抢焦点的轻浮窗；警戒仍走 show_alert
         _ => reminder::toast(app, &title, &body),
     }
 }
 
 /// 记一次真实提醒，供「提醒次数」与 CSV 导出使用；预览不计数
-fn count_reminder(db: &Arc<Db>, kind: &str) {
+fn count_reminder(db: &Arc<Db>, kind: &str, style: u8) {
     let now = Local::now();
     let day = now.format("%Y-%m-%d").to_string();
     let at = now.format("%Y-%m-%dT%H:%M:%S").to_string();
-    if let Err(e) = db.log_reminder(&day, kind, &at) {
+    if let Err(e) = db.log_reminder(&day, kind, &at, style) {
         log::error!("提醒次数落库失败: {e}");
     }
 }
@@ -629,42 +839,44 @@ fn dispatch(
     app: &AppHandle,
     timer: &Arc<Mutex<Timer>>,
     fx: Vec<Effect>,
+    boot_wall: chrono::DateTime<Local>,
     now_ms: Ms,
+    anchor: Option<&ResumeAnchor>,
     fast: bool,
     db: &Arc<Db>,
     prefs: &Arc<Mutex<Preferences>>,
+    allow: bool,
 ) {
     let p = prefs.lock().unwrap().clone();
-    let active = p.active_now();
 
     for e in fx {
         match e {
             Effect::Toast { at } => {
-                if !active {
+                if !allow {
                     log::info!("[抑制][轻] 非工作日或免打扰 at={at}");
                     continue;
                 }
-                log::info!("[提醒][轻] at={at}");
+                log::info!("[提醒][轻] at={at} style={}", p.reminder_style);
                 light_reminder(app, &p);
-                count_reminder(db, "light");
+                count_reminder(db, "light", p.reminder_style);
                 if p.sound_on {
                     sound::play(p.tone);
                 }
             }
             Effect::Modal { at } => {
-                if !active {
+                if !allow {
                     log::info!("[抑制][警戒] 非工作日或免打扰 at={at}");
                     continue;
                 }
-                log::info!("[提醒][警戒] at={at}");
+                log::info!("[提醒][警戒] at={at} style={}", p.reminder_style);
                 reminder::show_alert(app);
-                count_reminder(db, "alert");
+                count_reminder(db, "alert", p.reminder_style);
                 if p.sound_on {
                     sound::play(p.tone);
                 }
             }
             Effect::Summary { count, at } => {
-                if !active {
+                if !allow {
                     continue;
                 }
                 log::info!("[汇总] 全屏期间抑制 {count} 次 at={at}");
@@ -682,34 +894,76 @@ fn dispatch(
                 if fast {
                     log::debug!("[快照] start={start} sitting={sitting}");
                 }
-                persist(db, now_ms, start, sitting, sitting, false);
+                persist(
+                    db, boot_wall, now_ms, start, sitting, sitting, false, "open", anchor,
+                );
             }
             Effect::CloseSegment {
                 start,
                 sitting,
-                continuous,
+                reason,
             } => {
-                log::info!("[结算] start={start} sitting={sitting} continuous={continuous}");
-                persist(db, now_ms, start, sitting, continuous, true);
+                log::info!(
+                    "[结算] start={start} sitting={sitting} reason={}",
+                    reason.as_str()
+                );
+                // 段内没有离座，连续时长就等于本段时长
+                persist(
+                    db,
+                    boot_wall,
+                    now_ms,
+                    start,
+                    sitting,
+                    sitting,
+                    true,
+                    reason.as_str(),
+                    anchor,
+                );
             }
             Effect::RolloverDay { at } => log::info!("[跨零点] at={at}"),
         }
     }
 
-    let (paused, next) = {
+    let (paused, present, fullscreen, next) = {
         let t = timer.lock().unwrap();
-        (t.is_paused(), t.next_alert_in())
+        (
+            t.is_paused(),
+            t.is_present(),
+            t.is_fullscreen(),
+            t.next_alert_in(),
+        )
     };
-    let text = if paused {
-        locale::t("走走 · 已暂停")
-    } else if !active {
-        locale::t("走走 · 休息中")
-    } else if locale::is_en() {
-        format!("Zouzou · alert in {} min", next / MIN)
-    } else {
-        format!("走走 · 距警戒 {} 分钟", next / MIN)
+    let (state, _) = silence_state(&p, paused, present, fullscreen);
+    let text = match state.as_str() {
+        "paused" => locale::t("走走 · 已暂停"),
+        "offday" => locale::t("走走 · 休息日"),
+        "quiet" => locale::t("走走 · 休息中"),
+        "fullscreen" => locale::t("走走 · 全屏中"),
+        "away" => locale::t("走走 · 已离座"),
+        _ if locale::is_en() => format!("Zouzou · alert in {} min", next / MIN),
+        _ => format!("走走 · 距警戒 {} 分钟", next / MIN),
     };
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_tooltip(Some(text));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(s: &str) -> chrono::NaiveDateTime {
+        crate::db::parse_at(s).unwrap()
+    }
+
+    #[test]
+    fn resume_only_within_the_gap() {
+        let gap = 5 * MIN;
+        let now = at("2026-11-07T14:46:00");
+        assert!(can_resume("2026-11-07T14:45:30", now, gap), "离开 30 秒，接着算同一段");
+        assert!(can_resume("2026-11-07T14:45:30.250", now, gap), "毫秒格式同样认");
+        assert!(!can_resume("2026-11-07T14:30:00", now, gap), "离开 16 分钟，按退出收口");
+        assert!(!can_resume("", now, gap), "时间缺失时宁可不续");
+        assert!(can_resume("2026-11-07T14:47:00", now, gap), "时钟回拨不该判成很久之前");
     }
 }

@@ -7,12 +7,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-const FILES: [(&str, &[u8]); 5] = [
+const FILES: [(&str, &[u8]); 3] = [
     ("marimba.wav", include_bytes!("../sounds/marimba.wav")),
     ("bell.wav", include_bytes!("../sounds/bell.wav")),
     ("soft.wav", include_bytes!("../sounds/soft.wav")),
-    ("drop.wav", include_bytes!("../sounds/drop.wav")),
-    ("wood.wav", include_bytes!("../sounds/wood.wav")),
 ];
 
 static SOUND_DIR: OnceLock<PathBuf> = OnceLock::new();

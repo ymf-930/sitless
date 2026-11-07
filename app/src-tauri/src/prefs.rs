@@ -103,7 +103,7 @@ impl Preferences {
             p.action_beep = v == "1";
         }
         if let Some(v) = map.get(KEY_TONE).and_then(|s| s.parse::<u8>().ok()) {
-            p.tone = v.min(4);
+            p.tone = v.min(2);
         }
         if let Some(v) = map.get(KEY_SOUND_ON) {
             p.sound_on = v == "1";
@@ -160,7 +160,7 @@ impl Preferences {
             }
             KEY_TONE => {
                 let v: u8 = raw.parse().map_err(|_| "音效必须是数字")?;
-                self.tone = v.min(4);
+                self.tone = v.min(2);
             }
             KEY_VOLUME => {
                 let v: u32 = raw.parse().map_err(|_| "音量必须是数字")?;
@@ -202,14 +202,25 @@ impl Preferences {
         }
     }
 
+    /// 今天是否在选中的工作日里
+    pub fn workday_now(&self) -> bool {
+        self.workdays & weekday_bit(Local::now()) != 0
+    }
+
+    /// 当前若处于免打扰时段，返回该时段结束时刻 HH:MM。
+    /// 结束早于开始视为跨零点（22:00-06:00），此时 OR 判定。
+    pub fn quiet_end_now(&self) -> Option<String> {
+        let now = Local::now();
+        let minute = (now.hour() * 60 + now.minute()) as u16;
+        self.quiet
+            .iter()
+            .find(|&&range| quiet_covers(range, minute))
+            .map(|&(_, b)| fmt_hhmm(b))
+    }
+
     /// 当前是否处于「可以提醒」的时间（工作日 且 不在免打扰时段）
     pub fn active_now(&self) -> bool {
-        let now = Local::now();
-        if self.workdays & weekday_bit(now) == 0 {
-            return false;
-        }
-        let minute = (now.hour() * 60 + now.minute()) as u16;
-        !self.quiet.iter().any(|&(a, b)| minute >= a && minute < b)
+        self.workday_now() && self.quiet_end_now().is_none()
     }
 
     pub fn quiet_labels(&self) -> Vec<String> {
@@ -225,12 +236,24 @@ fn parse_quiet(s: &str) -> Vec<(u16, u16)> {
         .filter_map(|part| {
             let (a, b) = part.trim().split_once('-')?;
             let (start, end) = (parse_hhmm(a)?, parse_hhmm(b)?);
-            if end <= start {
+            if end == start {
+                // 起止相同是零长度时段，直接丢弃
                 return None;
             }
+            // end < start 表示跨零点，如 22:00-06:00
             Some((start, end))
         })
         .collect()
+}
+
+/// 免打扰时段是否覆盖某个分钟数（跨零点时按 OR 判定）
+pub fn quiet_covers(range: (u16, u16), minute: u16) -> bool {
+    let (a, b) = range;
+    if a < b {
+        minute >= a && minute < b
+    } else {
+        minute >= a || minute < b
+    }
 }
 
 pub fn format_quiet(ranges: &[(u16, u16)]) -> String {
@@ -256,7 +279,20 @@ mod tests {
     #[test]
     fn invalid_quiet_is_dropped() {
         assert!(parse_quiet("25:00-26:00").is_empty());
-        assert_eq!(parse_quiet("12:00-11:00").len(), 0);
+        assert_eq!(parse_quiet("12:00-12:00").len(), 0, "零长度时段应丢弃");
+        assert_eq!(parse_quiet("12:00-13:00,九点").len(), 1, "坏片段不影响好片段");
+    }
+
+    #[test]
+    fn quiet_range_can_wrap_over_midnight() {
+        let p = parse_quiet("22:00-06:00");
+        assert_eq!(p, vec![(22 * 60, 6 * 60)], "跨零点时段应保留，不能静默丢弃");
+        assert_eq!(format_quiet(&p), "22:00-06:00", "回写格式不变");
+
+        assert!(quiet_covers((22 * 60, 6 * 60), 23 * 60), "23:00 在夜间时段内");
+        assert!(quiet_covers((22 * 60, 6 * 60), 5 * 60), "05:00 在夜间时段内");
+        assert!(!quiet_covers((22 * 60, 6 * 60), 12 * 60), "中午不在夜间时段内");
+        assert!(!quiet_covers((22 * 60, 6 * 60), 6 * 60), "结束时刻已恢复");
     }
 
     #[test]
@@ -265,10 +301,21 @@ mod tests {
         p.set(KEY_DAILY_GOAL, "999").unwrap();
         assert_eq!(p.daily_goal, 30);
         p.set(KEY_TONE, "7").unwrap();
-        assert_eq!(p.tone, 4);
+        assert_eq!(p.tone, 2);
         p.set(KEY_VOLUME, "999").unwrap();
         assert_eq!(p.volume, 100);
         assert!(p.set("nope", "1").is_err());
+    }
+
+    #[test]
+    fn quiet_end_now_reports_range_end() {
+        let mut p = Preferences::default();
+        p.workdays = 0x7f;
+        p.quiet = vec![(0, 24 * 60 - 1)];
+        assert_eq!(p.quiet_end_now().as_deref(), Some("23:59"));
+        assert!(!p.active_now());
+        p.quiet.clear();
+        assert!(p.quiet_end_now().is_none());
     }
 
     #[test]

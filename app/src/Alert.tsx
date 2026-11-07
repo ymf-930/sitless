@@ -3,7 +3,8 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window'
 import { Button } from './ui/controls'
-import { setLangPref, t, useLang } from './i18n'
+import { currentLang, setLangPref, t, useLang } from './i18n'
+import { Icon } from './icons'
 import { pickAlertArt } from './art'
 import { randomAccent, tintAccent } from './accent'
 
@@ -29,12 +30,25 @@ const LINES: [string, string][] = [
   ['别等疼了才动', '久坐的账，最后都要还。'],
 ]
 
-/** 卡片四周的透明边距，给 CSS 阴影留位置；与 index.css 的 --alert-pad 保持一致 */
+/** 卡片四周的透明边距，给 CSS 阴影留位置 */
 const CARD_PAD = 12
+/** 轻浮窗自动收起时间，与主窗右上角 toast-card 的 9 秒一致 */
+const LIGHT_HIDE_MS = 9000
+
+type Mode = 'light' | 'alert'
+type ShowPayload = { mode: Mode; seq: number }
+type StatusInfo = {
+  confirm_before_rest: boolean
+  alert_seconds: number
+  language: string
+  sitting_ms: number
+}
+
+const PARAMS = new URLSearchParams(window.location.search)
 
 /** 按内容把窗口收到最小：卡片多高窗口就多高，圆角正好落在窗口四角 */
 async function fitWindow() {
-  const el = document.querySelector<HTMLElement>('.alertwin')
+  const el = document.querySelector<HTMLElement>('.alertwin, .lightwin')
   if (!el) return
   const win = getCurrentWindow()
   const prev = el.style.minHeight
@@ -52,9 +66,107 @@ async function fitWindow() {
   await invoke('alert_reposition').catch(() => {})
 }
 
+/** 轻浮窗展示的连续坐姿时长，跟随界面语言 */
+function fmtSit(ms: number) {
+  const m = Math.max(0, Math.floor(ms / 60000))
+  if (currentLang() === 'en') {
+    return m < 60 ? `${m} min` : `${Math.floor(m / 60)}h ${m % 60}m`
+  }
+  return m < 60 ? `${m} 分钟` : `${Math.floor(m / 60)} 小时 ${m % 60} 分`
+}
+
+/** 同一个置顶窗按 mode 分两种形态。
+ *  首次建窗靠 URL query（WebView 还没挂载，事件会丢），复用窗口靠 alert://show。 */
 export default function Alert() {
   useLang()
-  const [total, setTotal] = useState(10)
+  const [mode, setMode] = useState<Mode>(() => (PARAMS.get('mode') === 'light' ? 'light' : 'alert'))
+  const [seq, setSeq] = useState(() => Number(PARAMS.get('seq') ?? 0))
+  const [status, setStatus] = useState<StatusInfo | null>(null)
+
+  useEffect(() => {
+    const load = () => {
+      invoke<StatusInfo>('status')
+        .then((s) => {
+          setStatus(s)
+          setLangPref(s.language)
+        })
+        .catch(() => {})
+    }
+    load()
+    const un = listen<ShowPayload>('alert://show', (e) => {
+      setMode(e.payload.mode)
+      setSeq(e.payload.seq)
+      load()
+    })
+    return () => {
+      un.then((f) => f())
+    }
+  }, [])
+
+  return mode === 'light'
+    ? <LightPanel seq={seq} sitting={status?.sitting_ms ?? 0} />
+    : <AlertPanel status={status} />
+}
+
+/** 轻浮窗：置顶但不抢焦点、固定白底、无倒计时、9 秒自动收起 */
+function LightPanel({ seq, sitting }: { seq: number; sitting: number }) {
+  const [busy, setBusy] = useState(false)
+  // 只有紧跟在真实指针按下之后的点击才认，挡掉窗口显示时被系统补发的伪点击
+  const armedAt = useRef(0)
+
+  useEffect(() => {
+    const id = window.setTimeout(async () => {
+      await fitWindow().catch(() => {})
+      await invoke('alert_ready').catch(() => {})
+    }, 60)
+    return () => window.clearTimeout(id)
+  }, [])
+
+  // seq 变化（重申 / 被抢占）会让旧定时器作废；后端还会再校验一次序号
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      invoke('close_light', { seq }).catch(() => {})
+    }, LIGHT_HIDE_MS)
+    return () => window.clearTimeout(id)
+  }, [seq])
+
+  const act = async (cmd: string) => {
+    if (busy || Date.now() - armedAt.current > 5000) return
+    setBusy(true)
+    await invoke(cmd)
+    await invoke('close_alert')
+    setBusy(false)
+  }
+
+  return (
+    <div className="lightwin" onPointerDownCapture={() => { armedAt.current = Date.now() }}>
+      <div className="lw-top">
+        <div className="lw-ico"><Icon name="alarm" size={16} /></div>
+        <div className="lw-titles">
+          <b>{t('该起身活动一下了')}</b>
+          <span>{t('活动提醒')} · {t('已连续坐 {d}', { d: fmtSit(sitting) })}</span>
+        </div>
+        <button className="lw-x" aria-label={t('关闭提醒')} onClick={() => invoke('close_alert').catch(() => {})}>
+          ×
+        </button>
+      </div>
+      <p>{t('站起来走 1 分钟，或者做两个伸展。点「已起身」会把计时清零。')}</p>
+      <div className="lw-acts">
+        <Button variant="dark" disabled={busy} onClick={() => act('dismiss')}>
+          {t('已起身')}
+        </Button>
+        <Button variant="ghost" disabled={busy} onClick={() => act('skip')}>
+          {t('跳过')}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+/** 警戒窗：抢焦点、随机面板色 / 插画 / 文案、强制倒计时 */
+function AlertPanel({ status }: { status: StatusInfo | null }) {
+  // 「休息前确认」关掉时不锁按钮；直接派生，避免 effect 里同步 setState
+  const total = status ? (status.confirm_before_rest ? status.alert_seconds : 0) : 10
   const [left, setLeft] = useState(10)
   const [busy, setBusy] = useState(false)
   const [art, setArt] = useState(() => pickAlertArt())
@@ -85,16 +197,6 @@ export default function Alert() {
   }, [total])
 
   useEffect(() => {
-    // 「休息前确认」关掉时，警戒窗不锁按钮
-    invoke<{ confirm_before_rest: boolean; alert_seconds: number; language: string }>('status')
-      .then((s) => {
-        setTotal(s.confirm_before_rest ? s.alert_seconds : 0)
-        setLangPref(s.language)
-      })
-      .catch(() => {})
-  }, [])
-
-  useEffect(() => {
     // 首帧后再量：此时图片与字体已参与布局；量完由后端贴右下角并显示窗口
     const id = window.setTimeout(async () => {
       await fitWindow().catch(() => {})
@@ -104,14 +206,6 @@ export default function Alert() {
   }, [])
 
   useEffect(() => {
-    const onDown = (e: PointerEvent) =>
-      diag(`pointerdown x=${Math.round(e.clientX)} y=${Math.round(e.clientY)} trusted=${e.isTrusted}`)
-    const onClick = (e: MouseEvent) => {
-      const target = e.target as HTMLElement
-      diag(`click tag=${target.tagName} text=${(target.textContent || '').slice(0, 8)} trusted=${e.isTrusted}`)
-    }
-    window.addEventListener('pointerdown', onDown, true)
-    window.addEventListener('click', onClick, true)
     diag('alert mounted')
     start()
     const un = listen('alert://reset', () => {
@@ -124,13 +218,10 @@ export default function Alert() {
     })
     return () => {
       window.clearInterval(timer.current)
-      window.removeEventListener('pointerdown', onDown, true)
-      window.removeEventListener('click', onClick, true)
       un.then((f) => f())
     }
   }, [start])
 
-  // 只有紧跟在真实指针按下之后的点击才认，挡掉窗口显示时被系统补发的伪点击
   const armedAt = useRef(0)
 
   const act = async (cmd: string, args?: Record<string, unknown>) => {
@@ -140,13 +231,15 @@ export default function Alert() {
       return
     }
     setBusy(true)
-    console.log('act', cmd, JSON.stringify(args ?? {}))
+    diag(`act ${cmd}`)
     await invoke(cmd, args)
     await invoke('close_alert')
     setBusy(false)
   }
 
   const ready = left === 0
+  const cdTicks = Math.max(1, Math.min(total, 20))
+  const cdLit = Math.ceil((left / Math.max(1, total)) * cdTicks)
 
   return (
     <div className="alertwin" onPointerDownCapture={() => { armedAt.current = Date.now() }}>
@@ -168,9 +261,13 @@ export default function Alert() {
       <p className="alert-sub">{t(LINES[line][1])}</p>
 
       <div className="cd">
-        <div className="cd-bar">
-          <i style={{ width: `${total > 0 ? (left / total) * 100 : 0}%` }} />
-        </div>
+        {!ready && total > 0 && (
+          <div className="cd-ticks" aria-hidden="true">
+            {Array.from({ length: cdTicks }, (_, i) => (
+              <i key={i} className={i < cdLit ? 'on' : ''} />
+            ))}
+          </div>
+        )}
         <div className="cd-text">
           {ready ? t('可以清零重计了') : (
             <>

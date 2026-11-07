@@ -200,16 +200,26 @@ pub fn run() {
                     let _ = win.hide();
                 }
             }
-            if cfg!(debug_assertions) {
-                let level = if std::env::var("SITLESS_FAST").is_ok() {
-                    log::LevelFilter::Debug
-                } else {
-                    log::LevelFilter::Info
-                };
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default().level(level).build(),
-                )?;
-            }
+            // release 也写文件日志（轮转、保留最近 3 份），否则线上「没提醒」无从排查
+            let level = if cfg!(debug_assertions) && std::env::var("SITLESS_FAST").is_ok() {
+                log::LevelFilter::Debug
+            } else {
+                log::LevelFilter::Info
+            };
+            app.handle().plugin(
+                tauri_plugin_log::Builder::default()
+                    .level(level)
+                    .targets([
+                        tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                        tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                            file_name: Some("sitless".into()),
+                        }),
+                    ])
+                    .max_file_size(256 * 1024)
+                    .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(3))
+                    .timezone_strategy(tauri_plugin_log::TimezoneStrategy::UseLocal)
+                    .build(),
+            )?;
 
             // 数据目录 + SQLite
             let data_dir = app.path().app_data_dir()?;
@@ -218,13 +228,41 @@ pub fn run() {
                 db::Db::open(&data_dir.join("sitless.db")).expect("打开数据库失败"),
             );
             // 先从库读配置，音量决定提示音文件的采样幅度
-            let rc = RuntimeConfig::from_db(&store);
+            let mut rc = RuntimeConfig::from_db(&store);
             if let Err(e) = sound::prepare(&data_dir, rc.prefs.volume) {
                 log::warn!("准备提示音失败: {e}");
             }
-            if let Err(e) = store.close_stale() {
-                log::warn!("收口未闭合段失败: {e}");
+            // 上次离开留下的未闭合段：隔得近说明只是重启，接着算同一段；
+            // 隔得远说明中间关机或没在用，按 exit 收口（exit 不算起身）。
+            // 原来无条件按 exit 收口，等于每次重启都把一段正在进行的坐姿切断。
+            let gap = rc.idle_threshold.max(5 * MIN);
+            match store.open_segment() {
+                Ok(Some(o)) => {
+                    let now = chrono::Local::now().naive_local();
+                    if runtime::can_resume(&o.updated_at, now, gap) {
+                        log::info!("[续接] 距上次快照在 {} 秒内，本轮接着上一段", gap / 1000);
+                        rc.resume = Some(runtime::ResumeAnchor {
+                            started_at: o.started_at,
+                            day: o.day,
+                            sitting_ms: o.sitting_ms.max(0) as u64,
+                        });
+                    } else if let Err(e) = store.close_open("exit") {
+                        log::warn!("收口未闭合段失败: {e}");
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => log::warn!("读取未闭合段失败: {e}"),
             }
+            // 启动即留一条基线：排查「没提醒」时先确认进程真的起过、当天算不算工作日
+            log::info!(
+                "[启动] v{} 数据={} 工作日掩码={} 活动阈值={}min 样式={} 可提醒={}",
+                env!("CARGO_PKG_VERSION"),
+                data_dir.display(),
+                rc.prefs.workdays,
+                rc.idle_threshold / 60_000,
+                rc.prefs.reminder_style,
+                rc.prefs.active_now()
+            );
             app.manage(std::sync::Arc::clone(&store));
 
             // 先起运行时，再建托盘：托盘菜单回调依赖 managed Engine
@@ -266,10 +304,12 @@ pub fn run() {
             runtime::skip,
             runtime::dismiss,
             reminder::close_alert,
+            reminder::close_light,
             reminder::alert_ready,
             reminder::alert_reposition,
             runtime::today,
             runtime::trend,
+            runtime::hourly,
             runtime::diag,
             runtime::update_config,
             runtime::segments,
@@ -278,6 +318,7 @@ pub fn run() {
             runtime::autostart_state,
             runtime::set_autostart,
             runtime::export_csv,
+            runtime::export_diagnostics,
             runtime::reveal_path,
             runtime::clear_history,
             runtime::set_ui_language,

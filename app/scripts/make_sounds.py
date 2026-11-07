@@ -44,21 +44,6 @@ def tone(freq, partials, dur, attack=0.004):
     return [b * r for b, r in zip(buf, ramp)]
 
 
-def glide(f_start, f_end, tau, dur, attack=0.003, decay=0.12, harmonic=0.0):
-    """频率指数滑落，用来做水滴那种「啵」的音。"""
-    n = int(dur * SR)
-    buf = [0.0] * n
-    ramp = _attack_ramp(n, attack)
-    phase = 0.0
-    for i in range(n):
-        t = i / SR
-        f = f_end + (f_start - f_end) * math.exp(-t / tau)
-        phase += 2 * math.pi * f / SR
-        v = math.sin(phase) + harmonic * math.sin(2 * phase)
-        buf[i] = v * math.exp(-t / decay) * ramp[i]
-    return buf
-
-
 def mix(*tracks):
     """把若干（起始秒, 采样）叠到同一条时间轴上。"""
     end = max(int(off * SR) + len(buf) for off, buf in tracks)
@@ -130,21 +115,6 @@ def main():
             0.55,
             attack=0.032,
         ),
-    )
-
-    # 3 水滴：1300Hz 快速滑到 420Hz，短促清亮
-    write("drop.wav", glide(1300.0, 420.0, 0.035, 0.40, decay=0.10, harmonic=0.18), peak=0.86)
-
-    # 4 木鱼：三根短衰减泛音，一下「笃」，最短最不占注意力
-    write(
-        "wood.wav",
-        tone(
-            780.0,
-            [(1.00, 1.0, 0.045, 0), (1.63, 0.48, 0.030, 0), (2.70, 0.22, 0.020, 0)],
-            0.22,
-            attack=0.0015,
-        ),
-        peak=0.94,  # 时长短，响度补一点，听感和其它几个持平
     )
 
 

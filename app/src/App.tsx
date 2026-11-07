@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { Button, Stepper, Switch } from './ui/controls'
 import { listen, emit } from '@tauri-apps/api/event'
@@ -6,6 +6,8 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { Icon, type IconName } from './icons'
 import { currentLang, t, useLang, setLangPref } from './i18n'
 import { activityArt, ringArt } from './art'
+
+type RemindState = 'on' | 'paused' | 'offday' | 'quiet' | 'fullscreen' | 'away'
 
 type Status = {
   idle_threshold_ms: number
@@ -30,6 +32,8 @@ type Status = {
   present: boolean
   language: string
   fullscreen_suppress: boolean
+  remind_state: RemindState
+  resume_hint: string
 }
 
 type TodayData = {
@@ -39,14 +43,35 @@ type TodayData = {
   segments: number
   reminders: number
 }
-type DayRow = { day: string; sitting_ms: number; longest_ms: number }
-type SegRow = { started_at: string; sitting_ms: number; closed: boolean }
+type DayRow = {
+  day: string
+  sitting_ms: number
+  longest_ms: number
+  segments: number
+  rises: number
+  reminders: number
+}
+type SegRow = {
+  started_at: string
+  sitting_ms: number
+  closed: boolean
+  /** away / dismiss → 真的起身；midnight / exit 只是结算；空为旧数据 */
+  end_reason?: string
+}
+
+/** 只有真的站起来才算一次「起身」；跨零点与退出结算只是落库 */
+const RISE_REASONS = ['away', 'dismiss', 'unknown', '']
+const isRise = (s: SegRow) => s.closed && RISE_REASONS.includes(s.end_reason ?? '')
 
 const DEMO = new URLSearchParams(window.location.search).get('demo') === '1'
+/** 设计稿预览：?demo=1&state=offday|quiet|paused|away 直接验收非提醒状态 */
+const DEMO_STATE = (new URLSearchParams(window.location.search).get('state') ?? 'on') as RemindState
 
 const EMPTY_STATUS: Status = {
   idle_threshold_ms: 180000,
   sitting_ms: 0,
+  remind_state: 'on',
+  resume_hint: '',
   next_alert_ms: 0,
   next_activity_ms: 0,
   alert_threshold_ms: 7200000,
@@ -73,6 +98,8 @@ const EMPTY_STATUS: Status = {
 const DEMO_STATUS: Status = {
   idle_threshold_ms: 3 * 60000,
   sitting_ms: 42 * 60000,
+  remind_state: DEMO_STATE,
+  resume_hint: DEMO_STATE === 'quiet' ? '13:30' : '',
   next_alert_ms: 78 * 60000,
   next_activity_ms: 12 * 60000,
   alert_threshold_ms: 120 * 60000,
@@ -99,22 +126,74 @@ const DEMO_TODAY: TodayData = {
   day: todayIso(),
   sitting_ms: 3 * 3600000 + 42 * 60000,
   longest_ms: 3600000 + 18 * 60000,
-  segments: 3,
+  segments: 4,
   reminders: 6,
 }
 
-const DEMO_SEGS: SegRow[] = [
-  { started_at: `${todayIso()}T12:04:00`, sitting_ms: 30 * 60000, closed: true },
-  { started_at: `${todayIso()}T11:30:00`, sitting_ms: 2 * 3600000, closed: true },
-  { started_at: `${todayIso()}T10:00:00`, sitting_ms: 2 * 60000, closed: true },
-  { started_at: `${todayIso()}T09:12:00`, sitting_ms: 42 * 60000, closed: false },
-]
+/**
+ * 演示段：最新一段是进行中的 42 分钟（和 DEMO_STATUS.sitting_ms 一致），
+ * 各段时长合计 3h42m、最长 1h18m，跟 DEMO_TODAY 与圆环对得上。
+ * 起点按当前时间倒推，段与段首尾相接，时间线里的时间戳才不会自相矛盾。
+ */
+const DEMO_SEGS: SegRow[] = (() => {
+  const p = (n: number) => String(n).padStart(2, '0')
+  const iso = (ts: number) => {
+    const d = new Date(ts)
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  }
+  const spans = [
+    { min: 42, closed: false, reason: 'open' },
+    { min: 78, closed: true, reason: 'away' },
+    { min: 60, closed: true, reason: 'dismiss' },
+    { min: 42, closed: true, reason: 'away' },
+  ]
+  const now = Date.now()
+  let elapsed = 0
+  return spans.map((s) => {
+    // 本段起点 = 现在 - 本段及其之后所有段的时长，段与段首尾相接
+    const row: SegRow = {
+      started_at: iso(now - (elapsed + s.min) * 60000),
+      sitting_ms: s.min * 60000,
+      closed: s.closed,
+      end_reason: s.reason,
+    }
+    elapsed += s.min
+    return row
+  })
+})()
 
-const DEMO_DAYS: DayRow[] = lastDays(7).map((day, i) => ({
+const DEMO_DAYS: DayRow[] = lastDays(60).map((day, i) => ({
   day,
-  sitting_ms: [5.2, 6.8, 4.1, 7.3, 6, 3.4, 3.7][i] * 3600000,
-  longest_ms: [1.2, 2.1, 0.9, 2.2, 1.6, 0.8, 1.3][i] * 3600000,
+  sitting_ms: [5.2, 6.8, 4.1, 7.3, 6, 3.4, 3.7][i % 7] * 3600000,
+  longest_ms: [1.2, 2.1, 0.9, 2.2, 1.6, 0.8, 1.3][i % 7] * 3600000,
+  segments: [6, 9, 4, 11, 8, 3, 5][i % 7],
+  rises: [5, 8, 3, 10, 7, 2, 4][i % 7],
+  reminders: [4, 6, 3, 7, 5, 2, 3][i % 7],
 }))
+
+/** 演示模式下的时段分布，24 个小时桶（分钟 → 毫秒） */
+const DEMO_HOURLY: number[] = [
+  0, 0, 0, 0, 0, 0, 0,
+  12, 38, 52, 58, 44, 20, 55,
+  62, 48, 39, 30, 18, 8, 3,
+  1, 0, 0,
+].map((v) => v * 60000)
+
+/**
+ * 时段热力色阶：糖果色相（浅蓝 → 薄荷 → 蜜黄 → 粉），第 0 档是「无记录」。
+ * 四档明度依次压低（约 89% / 85% / 82% / 74%）：四个糖果色亮度几乎相同的话，
+ * 暖白底上「越深越久」就读不出来。薄荷替代纯绿，避开界面里「已完成」的语义。
+ * 分档阈值按当前区间峰值取整后四等分（见 hourEdges），不写死分钟数：
+ * 真实数据里单小时很少坐满 45 分钟，写死会让最深的颜色永远用不上。
+ */
+const HOUR_HEAT = ['#EDEAE3', '#D5E6F6', '#C3E6D6', '#EFCF92', '#EAA6B8']
+
+/** 峰值向上取整到 5 分钟，最少按 20 分钟铺满四档，避免分钟级抖动导致整条重排 */
+function hourEdges(peakMs: number): number[] {
+  const step = 5 * 60000
+  const base = Math.max(20 * 60000, Math.ceil(peakMs / step) * step)
+  return [1, 2, 3].map((i) => Math.round((base * i) / 4 / 60000) * 60000)
+}
 
 function hm(ms: number) {
   if (ms > 0 && ms < 60000) return t('不到 1 分钟')
@@ -157,6 +236,12 @@ function clockOf(iso: string) {
 function shortDur(ms: number) {
   if (ms <= 0) return ''
   return ms >= 3600000 ? `${(ms / 3600000).toFixed(1)}h` : `${Math.round(ms / 60000)}m`
+}
+
+/** 图例刻度用：整小时不显示 .0（30 天视图的累加值会到几小时） */
+function bandLabel(ms: number) {
+  if (ms >= 3600000) return `${(ms / 3600000).toFixed(1).replace(/\.0$/, '')}h`
+  return `${Math.round(ms / 60000)}m`
 }
 
 function lastDays(n: number) {
@@ -204,8 +289,6 @@ function previewTone(tone: number, volume: number) {
     { type: 'sine' as OscillatorType, freq: 523.25, dur: 0.7, decay: 0.3, attack: 0.004, glide: 0 },
     { type: 'sine' as OscillatorType, freq: 659.25, dur: 1.0, decay: 0.45, attack: 0.002, glide: 0, echo: 523.25 },
     { type: 'sine' as OscillatorType, freq: 587.33, dur: 0.55, decay: 0.2, attack: 0.03, glide: 0 },
-    { type: 'sine' as OscillatorType, freq: 1300, dur: 0.4, decay: 0.1, attack: 0.003, glide: 420 },
-    { type: 'triangle' as OscillatorType, freq: 780, dur: 0.22, decay: 0.05, attack: 0.0015, glide: 0 },
   ]
   const spec = specs[tone] ?? specs[0]
   const ctx = new window.AudioContext()
@@ -230,6 +313,36 @@ function previewTone(tone: number, volume: number) {
   gain.gain.exponentialRampToValueAtTime(0.0001, now + spec.dur)
   gain.connect(ctx.destination)
   window.setTimeout(() => void ctx.close(), (spec.dur + 0.2) * 1000)
+}
+
+/**
+ * 容器还能往下滚时把 is-more 挂到元素上，样式据此做底边渐隐。
+ * 滚动条藏掉之后，这是「下面还有内容」的唯一提示；滚到底或内容没溢出时自动撤掉，
+ * 否则卡片少的时候也会把最后一张的底边淡掉。
+ */
+function useScrollHint<T extends HTMLElement>() {
+  const ref = useRef<T | null>(null)
+  const [more, setMore] = useState(false)
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const sync = () => setMore(el.scrollHeight - el.scrollTop - el.clientHeight > 2)
+    sync()
+    el.addEventListener('scroll', sync, { passive: true })
+    const ro = new ResizeObserver(sync)
+    ro.observe(el)
+    // 子节点增删（时间线多一段、逐日明细展开）不会改容器高度，得单独盯
+    const mo = new MutationObserver(sync)
+    mo.observe(el, { childList: true, subtree: true })
+    return () => {
+      el.removeEventListener('scroll', sync)
+      ro.disconnect()
+      mo.disconnect()
+    }
+  }, [])
+
+  return [ref, more] as const
 }
 
 /** 固定间隔轮询，卸载即停；demo 有值时直接返回静态数据 */
@@ -372,7 +485,7 @@ export default function App() {
         {view === 'today' && (
           <TodayView status={status} today={today} act={act} />
         )}
-        {view === 'history' && <HistoryView />}
+        {view === 'history' && <HistoryView status={status} />}
         {view === 'settings' && <SettingsView status={status} />}
       </div>
 
@@ -435,6 +548,76 @@ function Toast({
   )
 }
 
+const pad2 = (n: number) => String(n).padStart(2, '0')
+
+/** 时间选择：自绘圆角面板，替掉 WebView2 无法用 CSS 定制的原生弹出层。
+ *  隐藏的 input 仍是值容器，timeVal() / addQuiet() 的取数逻辑不用改。 */
+function TimePicker({ id, defaultValue, label }: { id: string; defaultValue: string; label: string }) {
+  const [value, setValue] = useState(defaultValue)
+  const [open, setOpen] = useState(false)
+  const box = useRef<HTMLDivElement>(null)
+  const [hh, mm] = value.split(':').map((v) => Number(v) || 0)
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: PointerEvent) => {
+      if (box.current && !box.current.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    window.addEventListener('pointerdown', onDown, true)
+    window.addEventListener('keydown', onKey, true)
+    // 打开时把当前时/分滚到列表中间
+    box.current?.querySelectorAll<HTMLElement>('.tp-list').forEach((list) => {
+      const on = list.querySelector<HTMLElement>('.is-on')
+      if (on) list.scrollTop = Math.max(0, on.offsetTop - list.clientHeight / 2 + on.clientHeight / 2)
+    })
+    return () => {
+      window.removeEventListener('pointerdown', onDown, true)
+      window.removeEventListener('keydown', onKey, true)
+    }
+  }, [open])
+
+  const pick = (h: number, m: number) => {
+    const next = `${pad2(h)}:${pad2(m)}`
+    setValue(next)
+    const input = document.getElementById(id) as HTMLInputElement | null
+    if (input) input.value = next
+    setOpen(false)
+  }
+
+  return (
+    <div className="tp" ref={box}>
+      <input type="time" id={id} className="tp-native" defaultValue={defaultValue} tabIndex={-1} aria-hidden="true" />
+      <button type="button" className="tp-trigger" aria-label={label} aria-expanded={open} onClick={() => setOpen(!open)}>
+        <span>{value}</span>
+        <Icon name="clock" size={14} />
+      </button>
+      {open && (
+        <div className="tp-pop">
+          <div className="tp-col">
+            <div className="tp-col-title">{t('时')}</div>
+            <div className="tp-list">
+              {Array.from({ length: 24 }, (_, i) => (
+                <button type="button" key={i} className={i === hh ? 'is-on' : ''} onClick={() => pick(i, mm)}>{pad2(i)}</button>
+              ))}
+            </div>
+          </div>
+          <div className="tp-col">
+            <div className="tp-col-title">{t('分')}</div>
+            <div className="tp-list">
+              {Array.from({ length: 60 }, (_, i) => (
+                <button type="button" key={i} className={i === mm ? 'is-on' : ''} onClick={() => pick(hh, i)}>{pad2(i)}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 type View = 'today' | 'history' | 'settings'
 
 function Dock({
@@ -456,11 +639,7 @@ function Dock({
   ]
   return (
     <div className="dock-bar">
-      <div className="dock-side left">
-        <span className="dock-label">
-          {t('已连续 {d}', { d: status.sitting_ms < 60000 ? t('不到 1 分钟') : hm(status.sitting_ms) })}
-        </span>
-      </div>
+      <div className="dock-side left" />
 
       <div className="dock-wing left" aria-hidden="true" />
 
@@ -510,6 +689,38 @@ function Dock({
   )
 }
 
+type SilentState = Exclude<RemindState, 'on'>
+
+/**
+ * 分段环：30 根粗刻度，12 点起顺时针点亮，一段 = 1/30 警戒阈值。
+ * 用半透明墨色而不是主题色：卡片底色每次启动都会随机换，对比度不能跟着飘。
+ */
+const RING_SEGMENTS = 30
+
+/** 不提醒状态下，所有「即将发生」的文案统一换成状态说明 */
+const SILENT_COPY: Record<SilentState, { head: string; sub: string; tag: string; body: string }> = {
+  paused: {
+    head: '提醒已暂停', sub: '久坐仍在累计', tag: '暂停',
+    body: '提醒暂不弹出，久坐仍在累计。',
+  },
+  offday: {
+    head: '今天是休息日', sub: '下个工作日自动恢复', tag: '休息日',
+    body: '今天不在所选工作日，提醒不会弹出，时长照常记录。',
+  },
+  quiet: {
+    head: '休息时段 · 暂不提醒', sub: '{d} 恢复提醒', tag: '免打扰',
+    body: '当前处于休息时段，提醒不会弹出，时长照常记录。',
+  },
+  fullscreen: {
+    head: '全屏中 · 暂不提醒', sub: '退出全屏后汇总补发', tag: '全屏',
+    body: '检测到全屏播放，提醒先压住；退出后会补一条汇总，不会连发。',
+  },
+  away: {
+    head: '已离座', sub: '回到座位后继续', tag: '已离座',
+    body: '检测到你已离开，计时与提醒都暂时停下。',
+  },
+}
+
 function TodayView({
   status,
   today,
@@ -520,25 +731,37 @@ function TodayView({
   act: (cmd: string, args?: Record<string, unknown>) => void
 }) {
   const [segs] = usePoll<SegRow[]>('segments', undefined, 15000, [], DEMO ? DEMO_SEGS : undefined)
+  const [stageRef, stageMore] = useScrollHint<HTMLDivElement>()
+  const [listRef, listMore] = useScrollHint<HTMLDivElement>()
+  const state = status.remind_state
+  const silent = state !== 'on'
+  const copy = silent ? SILENT_COPY[state as SilentState] : null
   const total = Math.max(1, status.alert_threshold_ms)
   const progress = Math.min(1, Math.max(0, status.sitting_ms / total))
-  const R = 52
-  const C = 2 * Math.PI * R
+  const litSegments = Math.round(progress * RING_SEGMENTS)
   const nextAct = minutes(status.next_activity_ms)
   const actTotal = Math.max(1, minutes(status.activity_interval_ms))
   const { unit: segUnit, count: segCount } = segSpec(actTotal)
   const passed = Math.round(Math.min(1, Math.max(0, 1 - nextAct / actTotal)) * segCount)
-  const ordered = [...segs].reverse()
-  const rises = segs.filter((s) => s.closed).length
+  // 圆环读的是内存实时值（每秒刷），时间线读的是库里每分钟一次的快照，
+  // 续接上一段时库里还停在旧值。进行中的段一律改用 status.sitting_ms，两处同源。
+  // 后端按 started_at DESC 返回：最新一段在前，右栏沿用这个顺序。
+  const openIdx = segs.findIndex((s) => !s.closed)
+  const liveMs = status.sitting_ms
+  const ordered: SegRow[] = segs.map((s, i) =>
+    i === openIdx ? { ...s, sitting_ms: liveMs } : s,
+  )
+  const rises = segs.filter(isRise).length
   const reminders = today.reminders
-  const started = ordered.length ? clockOf(ordered[0].started_at) : '—'
+  const beginAt = ordered.length ? ordered[ordered.length - 1].started_at : null
+  const started = beginAt ? clockOf(beginAt) : '—'
   const totalDur = compact(today.sitting_ms)
   const longDur = compact(today.longest_ms)
   const tones = ['tl-mint', 'tl-sky', 'tl-butter', 'tl-lilac']
 
   return (
     <>
-      <div className="stage">
+      <div className={`stage${stageMore ? ' is-more' : ''}`} ref={stageRef}>
         <header className="head view-head">
           <div>
             <div className="eyebrow">{dateLabel(today.day)}</div>
@@ -549,27 +772,33 @@ function TodayView({
                 b: rises,
                 d: hm(today.longest_ms),
               })}
-              {status.paused ? t(' 提醒已暂停。') : ''}
+              {copy ? ` ${t(copy.sub, { d: status.resume_hint })}` : ''}
             </p>
           </div>
         </header>
 
-        <section className="alert">
+        <section className={`alert${silent ? ' is-silent' : ''}`}>
           <div className="alert-main">
             <span className="card-eyebrow">
               <Icon name="warning" size={13} />
               {t('久坐警戒 · 阈值 {n} 分钟', { n: minutes(status.alert_threshold_ms) })}
             </span>
             <h2>
-              {t('还有 {d}', { d: hm(status.next_alert_ms) })}
-              <br />
-              {t('就要打断你了')}
+              {copy ? (
+                <>{t(copy.head)}<br /><em className="state-line">{t(copy.sub, { d: status.resume_hint })}</em></>
+              ) : (
+                <>{t('还有 {d}', { d: hm(status.next_alert_ms) })}<br />{t('就要打断你了')}</>
+              )}
             </h2>
             <p>
-              {t('连续坐满阈值会弹置顶窗，')}
-              {status.confirm_before_rest
-                ? (status.alert_seconds > 0 ? t('{n} 秒后才可关闭。', { n: status.alert_seconds }) : t('出现即可关闭。'))
-                : t('不做强制等待。')}
+              {copy
+                ? t(copy.body)
+                : <>
+                    {t('连续坐满阈值会弹置顶窗，')}
+                    {status.confirm_before_rest
+                      ? (status.alert_seconds > 0 ? t('{n} 秒后才可关闭。', { n: status.alert_seconds }) : t('出现即可关闭。'))
+                      : t('不做强制等待。')}
+                  </>}
             </p>
             <div className="pill-row">
               <span className="pill">
@@ -583,42 +812,48 @@ function TodayView({
           <img className="alert-art" src={ringArt()} alt="" />
 
           <div className="ring">
-            <svg width="124" height="124" viewBox="0 0 124 124">
-              <circle cx="62" cy="62" r={R} fill="none" stroke="rgba(12,12,12,.13)" strokeWidth="9" />
-              <circle
-                cx="62"
-                cy="62"
-                r={R}
-                fill="none"
-                stroke="#0c0c0c"
-                strokeWidth="9"
-                strokeLinecap="round"
-                strokeDasharray={C.toFixed(1)}
-                strokeDashoffset={(C * (1 - progress)).toFixed(1)}
-                style={{ transition: 'stroke-dashoffset .9s linear' }}
-              />
+            <svg width="140" height="140" viewBox="0 0 124 124" aria-hidden="true">
+              {Array.from({ length: RING_SEGMENTS }, (_, i) => {
+                const lit = i < litSegments
+                // 不提醒时保留累计进度，但压成哑光，别读成「即将触发」
+                let stroke = 'rgba(12,12,12,.12)'
+                if (lit) stroke = silent ? 'rgba(12,12,12,.32)' : 'rgba(12,12,12,.85)'
+                return (
+                  <line
+                    key={i}
+                    x1="62"
+                    y1="17"
+                    x2="62"
+                    y2="8"
+                    transform={`rotate(${(i * 360) / RING_SEGMENTS} 62 62)`}
+                    stroke={stroke}
+                    strokeWidth="5.5"
+                    strokeLinecap="round"
+                  />
+                )
+              })}
             </svg>
             <div className="ring-mid">
               <b>{minutes(status.sitting_ms)}</b>
-              <span>{t('分钟')}</span>
+              <span>{t('已坐 · 分钟')}</span>
             </div>
           </div>
         </section>
 
-        <section className="next">
+        <section className={`next${silent ? ' is-silent' : ''}`}>
           <div className="next-main">
             <span className="card-eyebrow">
               <Icon name="alarm" size={13} />
               {t('活动提醒 · 每 {n} 分钟', { n: minutes(status.activity_interval_ms) })}
             </span>
-            <h3>{nextAct <= 0 ? t('下一次提醒马上就到') : t('下一次提醒在 {n} 分钟后', { n: nextAct })}</h3>
+            <h3>{copy ? t('提醒已关闭') : nextAct <= 0 ? t('下一次提醒马上就到') : t('下一次提醒在 {n} 分钟后', { n: nextAct })}</h3>
             <div className="next-meta-row">
-              <span className="next-meta">{t('右上角轻提示，不抢焦点，不响铃打断。')}</span>
+              <span className="next-meta">{copy ? t(copy.sub, { d: status.resume_hint }) : t('右上角轻提示，不抢焦点，不响铃打断。')}</span>
               <span className="segs-scale">{t('每格 {n} 分钟', { n: segUnit })}</span>
             </div>
-            <div className="segs">
+            <div className={`segs${silent ? ' is-silent' : ''}`}>
               {Array.from({ length: segCount }, (_, i) => (
-                <i key={i} className={i < passed ? 'on' : ''} />
+                <i key={i} className={!silent && i < passed ? 'on' : ''} />
               ))}
             </div>
           </div>
@@ -666,36 +901,45 @@ function TodayView({
         </div>
       </div>
 
-      <aside className="side">
+      <aside className="side side-today">
         <div className="side-head">
           <h2>{t('今日时间线')}</h2>
         </div>
 
-        {status.paused && (
-          <div className="tl-item tl-lilac">
-            <div className="tl-top">
-              <span className="tl-ico">
-                <Icon name="pause" size={14} />
-              </span>
-              <b>{t('暂停')}</b>
-              <span className="tl-time">{t('现在')}</span>
-            </div>
-            <p>{t('提醒暂不弹出，久坐仍在累计。')}</p>
-            <button className="tl-foot is-action" onClick={() => act('resume')}>
-              {t('恢复计时')}
-            </button>
+        {copy && (
+          <div className="tl-state">
+            <Icon
+              name={
+                state === 'paused'
+                  ? 'pause'
+                  : state === 'away'
+                    ? 'person'
+                    : state === 'fullscreen'
+                      ? 'warning'
+                      : 'clock'
+              }
+              size={14}
+            />
+            <b>{t(copy.tag)}</b>
+            <span>{t(copy.sub, { d: status.resume_hint })}</span>
+            {state === 'paused' && (
+              <button onClick={() => act('resume')}>{t('恢复计时')}</button>
+            )}
           </div>
         )}
 
-        <div className="timeline">
+        <div className={`timeline${listMore ? ' is-more' : ''}`} ref={listRef}>
           {ordered.length === 0 ? (
             <p className="note">{t('还没有记录，坐一会儿就有了。')}</p>
           ) : (
-            ordered.slice(0, 4).map((s, i) => {
-              const first = i === 0
-              const kind = first ? t('开始') : s.closed ? t('已起身') : t('进行中')
-              const icon: IconName = first ? 'play' : s.closed ? 'check' : 'clock'
-              const footIcon: IconName = first ? 'chart' : 'clock'
+            ordered.map((s, i) => {
+              // 进行中段始终显示「进行中 + 时长」，别被当成今天第一段
+              const isLive = !s.closed && i === openIdx
+              const isBegin = !isLive && s.started_at === beginAt
+              const rise = isRise(s)
+              const kind = isBegin ? t('开始') : rise ? t('已起身') : s.closed ? t('已结算') : t('进行中')
+              const icon: IconName = isBegin ? 'play' : rise ? 'check' : 'clock'
+              const footIcon: IconName = isBegin ? 'chart' : 'clock'
               return (
                 <div className={`tl-item ${tones[i % tones.length]}`} key={s.started_at}>
                   <div className="tl-top">
@@ -706,15 +950,15 @@ function TodayView({
                     <span className="tl-time">{clockOf(s.started_at)}</span>
                   </div>
                   <p>
-                    {first
-                      ? t('检测到你在电脑前，新的一段正在累计。')
+                    {isBegin
+                      ? t('今天的第一段从这里开始。')
                       : s.closed
                         ? t('这一段连续坐了 {d}。', { d: hm(s.sitting_ms) })
                         : t('这一段已经 {d}，计时未中断。', { d: hm(s.sitting_ms) })}
                   </p>
                   <div className="tl-foot">
                     <Icon name={footIcon} size={11} />
-                    {first ? t('已记录 {n} 段', { n: segs.length }) : s.closed ? t('计时已归零') : t('未计入起身')}
+                    {isBegin ? t('已记录 {n} 段', { n: segs.length }) : s.closed ? t('计时已归零') : t('未计入起身')}
                   </div>
                 </div>
               )
@@ -743,97 +987,271 @@ function TodayView({
   )
 }
 
-function HistoryView() {
-  const [rows] = usePoll<DayRow[]>('trend', { days: 7 }, 30000, [], DEMO ? DEMO_DAYS : undefined)
-  const days = lastDays(7).map((day) => {
-    const hit = rows.find((r) => r.day === day)
-    return { day, sitting_ms: hit?.sitting_ms ?? 0, longest_ms: hit?.longest_ms ?? 0 }
-  })
-  // 刻度取 15 分钟为步长的整数倍，数据稀疏时柱子不会被压成一条线
-  const peakMs = Math.max(...days.map((d) => d.sitting_ms))
-  const max = Math.max(15 * 60000, Math.ceil(peakMs / (15 * 60000)) * 15 * 60000)
-  const totalMs = days.reduce((a, r) => a + r.sitting_ms, 0)
-  const active = days.filter((d) => d.sitting_ms > 0)
-  const avg = active.length ? totalMs / active.length : 0
-  const peak = days.reduce<DayRow | null>((a, r) => (!a || r.sitting_ms > a.sitting_ms ? r : a), null)
+type Metric = 'sitting' | 'longest' | 'rises'
+
+const METRIC_KEYS: { key: Metric; label: string }[] = [
+  { key: 'sitting', label: '总时长' },
+  { key: 'longest', label: '最长连续' },
+  { key: 'rises', label: '起身次数' },
+]
+
+const EMPTY_DAY: Omit<DayRow, 'day'> = {
+  sitting_ms: 0,
+  longest_ms: 0,
+  segments: 0,
+  rises: 0,
+  reminders: 0,
+}
+
+function HistoryView({ status }: { status: Status }) {
+  const [range, setRange] = useState<7 | 30>(7)
+  const [metric, setMetric] = useState<Metric>('sitting')
+  const [picked, setPicked] = useState<string | null>(null)
+  const [showAll, setShowAll] = useState(false)
+  // 取 range*2 天：后一半是当前周期，前一半是环比对照周期
+  const [rows] = usePoll<DayRow[]>('trend', { days: range * 2 }, 30000, [], DEMO ? DEMO_DAYS : undefined)
+  const [hourly] = usePoll<number[]>('hourly', { days: range }, 60000, Array(24).fill(0), DEMO ? DEMO_HOURLY : undefined)
+  const [stageRef, stageMore] = useScrollHint<HTMLDivElement>()
+
   const on = todayIso()
+  const all = lastDays(range * 2).map((day) => {
+    const hit = rows.find((r) => r.day === day)
+    return hit ?? { day, ...EMPTY_DAY }
+  })
+  // 柱图展示含今天的窗口；统计（日均 / 达标 / 环比）只用已经走完的日子，
+  // 否则上午看历史会得出「比上周期少坐 5 小时」这种假结论。
+  const days = all.slice(range)
+  const done = all.filter((d) => d.day < on)
+  // 统计只用窗口里已经走完的日子；对照周期取同样长度，保证两边可比
+  const cur = days.filter((d) => d.day < on)
+  const prev = done.slice(-(cur.length * 2), -cur.length)
+
+  const sum = (arr: DayRow[], f: (d: DayRow) => number) => arr.reduce((a, d) => a + f(d), 0)
+  const curTotal = sum(cur, (d) => d.sitting_ms)
+  const prevTotal = sum(prev, (d) => d.sitting_ms)
+  const active = cur.filter((d) => d.sitting_ms > 0)
+  // 日均只除以「有记录的日子」：没开机的日子是「没数据」，不是「0 分钟」，
+  // 拿它做分母会把 1 天的数据摊成「日均 1 分钟」。卡片标签同时写明有记录几天，读者能自己核对。
+  const avg = active.length ? curTotal / active.length : 0
+  const longestPeak = cur.reduce((a, d) => Math.max(a, d.longest_ms), 0)
+  const goal = Math.max(1, status.daily_goal)
+  const okDays = cur.filter((d) => d.rises >= goal).length
+
+  let streak = 0
+  for (let i = cur.length - 1; i >= 0; i--) {
+    if (cur[i].rises >= goal) streak++
+    else break
+  }
+
+  const diff = curTotal - prevTotal
+  const flat = Math.abs(diff) < 60000
+  const parts: string[] = []
+  if (prevTotal > 0) {
+    parts.push(flat
+      ? t('与上一周期基本持平')
+      : diff <= 0
+        ? t('比上一周期少坐 {d}', { d: hm(-diff) })
+        : t('比上一周期多坐 {d}', { d: hm(diff) }))
+  }
+  if (streak > 0) parts.push(t('连续 {n} 天达标', { n: streak }))
+  const insight = active.length === 0
+    ? t('还没有足够的数据。')
+    : parts.length > 0 ? parts.join(' · ') : t('暂无对比数据')
+
+  const val = (d: DayRow) =>
+    metric === 'sitting' ? d.sitting_ms : metric === 'longest' ? d.longest_ms : d.rises
+  const peakVal = Math.max(0, ...days.map(val))
+  const max = metric === 'rises'
+    ? Math.max(4, peakVal)
+    : Math.max(15 * 60000, Math.ceil(peakVal / (15 * 60000)) * 15 * 60000)
+  const fmtBar = (v: number) => (metric === 'rises' ? String(v) : shortDur(v))
+
+  const hasHour = hourly.some((v) => v > 0)
+  const peakHour = hourly.indexOf(Math.max(...hourly))
+  const edges = hourEdges(Math.max(0, ...hourly))
+  const heat = (ms: number) => {
+    if (ms <= 0) return HOUR_HEAT[0]
+    const band = edges.filter((e) => ms > e).length
+    return HOUR_HEAT[band + 1]
+  }
+  // 阈值用短时长格式（16m / 4.6h）：30 天视图的累加值会到几百分钟，写成「≤320 分」没法读
+  const heatLabels = [t('无记录'), ...edges.map((e) => `≤${bandLabel(e)}`), `>${bandLabel(edges[2])}`]
+  const visible = showAll ? [...days].reverse() : [...days].reverse().slice(0, 10)
+
+  const toggle = (day: string) => setPicked(picked === day ? null : day)
 
   return (
     <>
-      <div className="stage">
-        <header className="head">
-          <div className="eyebrow">{t('最近 7 天')}</div>
-          <h1>{t('日均 {d}', { d: hm(avg) })}</h1>
-          <p className="sub">
-            {peak && peak.sitting_ms > 0
-              ? t('峰值在 {w}，{d}。', { w: weekday(peak.day), d: hm(peak.sitting_ms) })
-              : t('还没有足够的数据。')}
-          </p>
+      <div className={`stage${stageMore ? ' is-more' : ''}`} ref={stageRef}>
+        <header className="head hist-head">
+          <div>
+            <div className="eyebrow">
+              {t('最近 {n} 天', { n: range })}
+              {active.length > 0 && active.length < cur.length
+                ? ` · ${t('{n} 天有记录', { n: active.length })}`
+                : ''}
+            </div>
+            <h1>{t('日均 {d}', { d: hm(avg) })}</h1>
+            <p className="sub">{insight}</p>
+          </div>
+          <div className="seg-ctrl hist-range">
+            {[7, 30].map((n) => (
+              <button
+                key={n}
+                className={range === n ? 'is-on' : ''}
+                onClick={() => { setRange(n as 7 | 30); setPicked(null); setShowAll(false) }}
+              >
+                {t('{n} 天', { n })}
+              </button>
+            ))}
+          </div>
         </header>
 
-        <div className="card chart-card">
+        <div className={`card hist-chart-card${range === 30 ? ' is-wide' : ''}`}>
+          <div className="hist-metrics">
+            {METRIC_KEYS.map((m) => (
+              <button key={m.key} className={metric === m.key ? 'is-on' : ''} onClick={() => setMetric(m.key)}>
+                {t(m.label)}
+              </button>
+            ))}
+          </div>
           <div className="chart">
-            {days.map((r) => {
-              const empty = r.sitting_ms === 0
-              const pct = empty ? 88 : Math.max(4, (r.sitting_ms / max) * 88)
-              return (
-                <div className={`col${r.day === on ? ' on' : ''}`} key={r.day}>
-                  <div className="barbox">
-                    <b>{shortDur(r.sitting_ms)}</b>
-                    <div className={`bar${empty ? ' is-empty' : ''}`} style={{ height: `${pct}%` }} />
+            <div className="chart-plot">
+              {days.map((r) => {
+                const v = val(r)
+                const empty = v === 0
+                const pct = empty ? 0 : Math.max(4, (v / max) * 88)
+                return (
+                  <div
+                    className={`col${r.day === on ? ' on' : ''}${picked === r.day ? ' is-picked' : ''}`}
+                    key={r.day}
+                    onClick={() => toggle(r.day)}
+                  >
+                    <div className="barbox">
+                      <b>{empty ? '' : fmtBar(v)}</b>
+                      {empty ? null : <div className="bar" style={{ height: `${pct}%` }} />}
+                    </div>
                   </div>
-                  <i>{weekday(r.day)}</i>
-                </div>
-              )
-            })}
+                )
+              })}
+            </div>
+            <div className="chart-axis">
+              {days.map((r) => {
+                // 30 天视图只露每 5 天的刻度；带上月份，否则跨月时「30 → 05」读不出是几月
+                const label = range === 30
+                  ? (Number(r.day.slice(8)) % 5 === 0 || r.day === on
+                    ? `${Number(r.day.slice(5, 7))}/${Number(r.day.slice(8))}`
+                    : '')
+                  : weekday(r.day)
+                return (
+                  <i
+                    key={r.day}
+                    className={`${r.day === on ? 'on' : ''}${picked === r.day ? ' is-picked' : ''}`}
+                    onClick={() => toggle(r.day)}
+                  >
+                    {label}
+                  </i>
+                )
+              })}
+            </div>
           </div>
         </div>
 
         <div className="tiles tiles-history">
           <div className="tile t-mint">
-            <div className="ico">
-              <Icon name="clock" size={19} />
-            </div>
-            <b>{hm(totalMs)}</b>
-            <span>{t('七天合计')}</span>
+            <b>{hm(curTotal)}</b>
+            <span>{t('{n} 天合计', { n: cur.length })}</span>
+            <em className="tile-tag">{t('日均 {d}', { d: hm(avg) })}</em>
           </div>
           <div className="tile t-sky">
-            <div className="ico">
-              <Icon name="chart" size={19} />
-            </div>
-            <b>{peak ? hm(peak.sitting_ms) : '—'}</b>
-            <span>{t('最久的一天')}</span>
+            <b>{longestPeak > 0 ? hm(longestPeak) : '—'}</b>
+            <span>{t('最长连续')}</span>
+            <em className="tile-tag">{t('单次没起身的最久一段')}</em>
           </div>
           <div className="tile t-butter">
-            <div className="ico">
-              <Icon name="person" size={19} />
-            </div>
-            <b>{active.length}</b>
-            <span>{t('有记录的天数')}</span>
+            <b>{okDays} / {cur.length}</b>
+            <span>{t('达标天数')}</span>
+            <em className="tile-tag">{t('目标 每天 {n} 次起身', { n: goal })}</em>
           </div>
           <div className="tile t-pink">
-            <div className="ico">
-              <Icon name="alarm" size={19} />
-            </div>
-            <b>{active.length ? hm(avg) : '—'}</b>
-            <span>{t('日均')}</span>
+            <b>{prevTotal > 0 ? (flat ? '→ 0%' : `${diff <= 0 ? '↓' : '↑'} ${Math.round(Math.abs(diff) / prevTotal * 100)}%`) : '—'}</b>
+            <span>{t('环比上一周期')}</span>
+            <em className="tile-tag">
+              {prevTotal > 0
+                ? (flat
+                  ? t('基本持平')
+                  : diff <= 0 ? t('少坐 {d}', { d: hm(-diff) }) : t('多坐 {d}', { d: hm(diff) }))
+                : t('暂无对比数据')}
+            </em>
           </div>
+        </div>
+
+        <div className="card hour-card">
+          <div className="hour-top">
+            <h3>{t('时段分布')}</h3>
+            <span>{t('哪几个小时坐得最久（不含今天）')}</span>
+            <div className="hour-legend">
+              {heatLabels.map((label, i) => (
+                <span key={i}><i style={{ background: HOUR_HEAT[i] }} />{label}</span>
+              ))}
+            </div>
+          </div>
+          <div className="hour-bars">
+            {hourly.map((ms, h) => (
+              <i
+                key={h}
+                className="hour-cell"
+                style={{ background: heat(ms) }}
+                title={`${h}:00–${(h + 1) % 24}:00 · ${t('累计 {d}', { d: hm(ms) })}`}
+              />
+            ))}
+          </div>
+          <div className="hour-axis">
+            <span>0:00</span><span>6:00</span><span>12:00</span><span>18:00</span><span>23:00</span>
+          </div>
+          <p className="note">
+            {hasHour
+              ? t('最近 {n} 天里（不含今天），{h}:00–{h2}:00 累计坐得最久，共 {d}。', {
+                n: range,
+                h: peakHour,
+                h2: (peakHour + 1) % 24,
+                d: hm(hourly[peakHour]),
+              })
+              : t('还没有足够的数据。')}
+          </p>
         </div>
       </div>
 
       <aside className="side">
-        <div className="card">
-          <img src="/cal.png" alt="" style={{ width: 92, height: 92, objectFit: 'contain', display: 'block', margin: '0 auto 6px' }} />
-          <p className="note" style={{ textAlign: 'center' }}>
-            {t('时长按段累加，同一段反复写入不会重复计数。')}
-          </p>
+        <div className="side-head">
+          <h2>{t('逐日明细')}</h2>
+          {/* 30 天时列表比窗口高，「查看全部」放到底部会落在折叠线以下，挪进吸顶标题里 */}
+          {days.length > 10 && (
+            <button className="day-more head-more" onClick={() => setShowAll(!showAll)}>
+              {showAll ? t('收起') : t('查看全部 {n} 天', { n: days.length })}
+            </button>
+          )}
         </div>
-        <div className="card">
-          <h3>{t('这组数字怎么来的')}</h3>
-          <p className="note">
-            {t('跨零点的那一段会被拆成两段，分别记在两天。缺记录的日子在图上画成淡色占位，不会被跳过。')}
-          </p>
+        <div className="day-list">
+          {visible.map((d) => (
+            <button key={d.day} className={`day-row${picked === d.day ? ' is-sel' : ''}`} onClick={() => toggle(d.day)}>
+              <span className="day-date">{d.day.slice(5)}<em>{weekday(d.day)}</em></span>
+              <span className="day-vals">
+                <b>{d.sitting_ms > 0 ? hm(d.sitting_ms) : t('无记录')}</b>
+                <i>
+                  {t('起身 {n} 次', { n: d.rises })} · {t('提醒 {n} 次', { n: d.reminders })} · {t('最长 {d}', { d: hm(d.longest_ms) })}
+                </i>
+              </span>
+            </button>
+          ))}
         </div>
+        <details className="hist-note">
+          <summary>{t('统计口径')}</summary>
+          <p className="note">{t('时长按段累加，同一段反复写入不会重复计数。')}</p>
+          <p className="note">{t('跨零点的那一段会被拆成两段，分别记在两天。没有记录的日子在图上留空，不补零。')}</p>
+          <p className="note">{t('只有离座或点了「已起身」才算起身次数，跨零点与退出结算不计入。')}</p>
+          <p className="note">{t('当天还没走完，不计入日均、达标与环比，只出现在柱图上。')}</p>
+        </details>
       </aside>
     </>
   )
@@ -907,6 +1325,7 @@ function SliderCard({
 }
 
 function SettingsView({ status }: { status: Status }) {
+  const [stageRef, stageMore] = useScrollHint<HTMLDivElement>()
   const [adv, setAdv] = useState(false)
   const [volume, setVolume] = useState(() =>
     DEMO ? Number(localStorage.getItem('sitless.volume') ?? 62) : status.volume,
@@ -924,6 +1343,7 @@ function SettingsView({ status }: { status: Status }) {
   const [exported, setExported] = useState('')
   const [exportMsg, setExportMsg] = useState('')
   const [confirmClear, setConfirmClear] = useState(false)
+  const [quietErr, setQuietErr] = useState('')
 
   useEffect(() => setLang(status.language || 'auto'), [status.language])
 
@@ -943,6 +1363,20 @@ function SettingsView({ status }: { status: Status }) {
     try {
       setExported(await invoke<string>('export_csv'))
       setExportMsg('')
+    } catch (e) {
+      setExportMsg(String(e))
+    }
+  }
+
+  const doDiag = async () => {
+    if (DEMO) {
+      setExportMsg(t('演示模式下不写文件'))
+      return
+    }
+    try {
+      const p = await invoke<string>('export_diagnostics')
+      invoke('reveal_path', { path: p }).catch(console.error)
+      setExportMsg(t('诊断文件已导出到下载目录'))
     } catch (e) {
       setExportMsg(String(e))
     }
@@ -980,6 +1414,12 @@ function SettingsView({ status }: { status: Status }) {
     const a = timeVal('qStart')
     const b = timeVal('qEnd')
     if (!a || !b) return
+    // 起止相同是零长度时段，后端会直接丢弃，这里先说清楚，不静默失败
+    if (a === b) {
+      setQuietErr(t('开始与结束不能相同'))
+      return
+    }
+    setQuietErr('')
     save('quiet', [...status.quiet, `${a}-${b}`].join(','))
   }
 
@@ -987,6 +1427,11 @@ function SettingsView({ status }: { status: Status }) {
     const a = timeVal(`qs${i}`)
     const b = timeVal(`qe${i}`)
     if (!a || !b) return
+    if (a === b) {
+      setQuietErr(t('开始与结束不能相同'))
+      return
+    }
+    setQuietErr('')
     const next = [...status.quiet]
     next[i] = `${a}-${b}`
     save('quiet', next.join(','))
@@ -1000,13 +1445,21 @@ function SettingsView({ status }: { status: Status }) {
     invoke('preview', { kind }).catch(console.error)
   }
 
+  /** 音量：拖动时只动界面，停手 240ms 再落库 */
+  const volTimer = useRef<number | null>(null)
+  useEffect(() => () => {
+    if (volTimer.current) window.clearTimeout(volTimer.current)
+  }, [])
+
   const changeVolume = (v: number) => {
     setVolume(v)
     if (DEMO) {
       localStorage.setItem('sitless.volume', String(v))
-    } else {
-      save('volume', v)
+      return
     }
+    // 每落一次库都会重写 12 项配置并重新采样 5 个 wav，不能跟着拖动走
+    if (volTimer.current) window.clearTimeout(volTimer.current)
+    volTimer.current = window.setTimeout(() => save('volume', v), 240)
   }
 
   const toggleAutostart = async () => {
@@ -1070,7 +1523,7 @@ function SettingsView({ status }: { status: Status }) {
 
   return (
     <>
-      <div className="stage">
+      <div className={`stage${stageMore ? ' is-more' : ''}`} ref={stageRef}>
         <header className="head">
           <div className="eyebrow">{t('偏好设置')}</div>
           <h1>{t('设置')}</h1>
@@ -1118,7 +1571,7 @@ function SettingsView({ status }: { status: Status }) {
               <span className="vol-num">{volPct}</span>
             </div>
             <div className="tone-row">
-              {[t('木琴'), t('铃'), t('软提示'), t('水滴'), t('木鱼')].map((label, i) => (
+              {[t('木琴'), t('铃'), t('软提示')].map((label, i) => (
                 <button key={label} className={tone === i ? 'is-on' : ''} onClick={() => changeTone(i)}>
                   {label}
                 </button>
@@ -1171,15 +1624,14 @@ function SettingsView({ status }: { status: Status }) {
             <div>
               <b>{t('休息时段')}</b>
               <div className="hint">{t('这段时间内不打扰')}</div>
-            </div>
-            <div className="quiet-list">
+            </div>            <div className="quiet-list">
               {status.quiet.map((q, i) => {
                 const [a, b] = q.split('-')
                 return (
                   <div className="quiet-row" key={`${i}-${q}`}>
-                    <input type="time" id={`qs${i}`} defaultValue={a} aria-label={t('开始时间')} />
+                    <TimePicker id={`qs${i}`} defaultValue={a} label={t('开始时间')} />
                     <span>—</span>
-                    <input type="time" id={`qe${i}`} defaultValue={b} aria-label={t('结束时间')} />
+                    <TimePicker id={`qe${i}`} defaultValue={b} label={t('结束时间')} />
                     <button className="quiet-save" onClick={() => updateQuiet(i)}>{t('保存')}</button>
                     <button className="quiet-del" onClick={() => removeQuiet(i)} aria-label={t('删除该时段')}>×</button>
                   </div>
@@ -1190,19 +1642,30 @@ function SettingsView({ status }: { status: Status }) {
           </div>
 
           <div className="pref-row">
-            <div className="quiet-add">
-              <input type="time" id="qStart" defaultValue="12:00" aria-label={t('新时段开始')} />
-              <span>—</span>
-              <input type="time" id="qEnd" defaultValue="13:30" aria-label={t('新时段结束')} />
-              <Button variant="dark" onClick={addQuiet}>{t('添加')}</Button>
+            <div className="quiet-add-wrap">
+              <div className="quiet-add">
+                <TimePicker id="qStart" defaultValue="12:00" label={t('新时段开始')} />
+                <span>—</span>
+                <TimePicker id="qEnd" defaultValue="13:30" label={t('新时段结束')} />
+                <Button variant="dark" onClick={addQuiet}>{t('添加')}</Button>
+              </div>
+              <span className={`quiet-err${quietErr ? '' : ' is-hint'}`}>
+                {quietErr || t('结束早于开始表示跨零点，例如 22:00—06:00')}
+              </span>
             </div>
           </div>
         </div>
 
-        <div className="card row-card">
-          <div>
-            <h4>{t('提醒窗口')}</h4>
-            <div className="hint">{t('轻提醒以什么形式出现')}</div>
+        <div className="card row-card remind-card">
+          <div className="remind-top">
+            <div>
+              <h4>{t('提醒窗口')}</h4>
+              <div className="hint">{t('轻提醒以什么形式出现；置顶窗为不抢焦点的小浮窗，警戒始终是完整弹窗')}</div>
+            </div>
+            <div className="remind-preview">
+              <Button variant="soft" onClick={() => preview('light')}>{t('预览')}</Button>
+              <Button variant="soft" onClick={() => preview('alert')}>{t('警戒预览')}</Button>
+            </div>
           </div>
           <div className="head-tools">
             <div className="seg-ctrl">
@@ -1212,8 +1675,6 @@ function SettingsView({ status }: { status: Status }) {
                 </button>
               ))}
             </div>
-            <Button variant="soft" onClick={() => preview('light')}>{t('预览')}</Button>
-            <Button variant="soft" onClick={() => preview('alert')}>{t('警戒预览')}</Button>
           </div>
         </div>
 
@@ -1343,7 +1804,10 @@ function SettingsView({ status }: { status: Status }) {
                   )}
                   {exportMsg && <div className="adv-result is-error">{exportMsg}</div>}
                 </div>
-                <Button variant="dark" onClick={doExport}>{t('导出')}</Button>
+                <div className="adv-acts">
+                  <Button variant="soft" onClick={doDiag}>{t('诊断信息')}</Button>
+                  <Button variant="dark" onClick={doExport}>{t('导出')}</Button>
+                </div>
               </div>
               <div className="adv-row">
                 <div>

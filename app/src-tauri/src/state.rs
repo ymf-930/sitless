@@ -7,8 +7,6 @@
 //! - 未响应每 `repeat_interval` 重申，`repeat_limit` 次封顶；之后每 `quota_window` 重置配额。
 //! - 全屏期间不弹、不耗配额，退出后只补一条汇总。
 
-#![allow(dead_code)] // 待 step3 接入 tick 循环后移除
-
 pub type Ms = u64;
 
 pub const MIN: Ms = 60_000;
@@ -44,13 +42,36 @@ impl Default for Config {
     }
 }
 
+/// 段是怎么结束的。只有 Away / Dismiss 算「起身」；
+/// Midnight（跨零点）与 Exit（退出）只是结算，不能进起身次数。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EndReason {
+    Away,
+    Dismiss,
+    Midnight,
+}
+
+impl EndReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EndReason::Away => "away",
+            EndReason::Dismiss => "dismiss",
+            EndReason::Midnight => "midnight",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Effect {
     Toast { at: Ms },
     Modal { at: Ms },
     Summary { count: u8, at: Ms },
     UpsertSegment { start: Ms, sitting: Ms },
-    CloseSegment { start: Ms, sitting: Ms, continuous: Ms },
+    CloseSegment {
+        start: Ms,
+        sitting: Ms,
+        reason: EndReason,
+    },
     RolloverDay { at: Ms },
 }
 
@@ -63,13 +84,16 @@ pub enum Event {
     /// 暂停；`Some(ms)` 为「从现在起 ms 毫秒后自动恢复」，`None` 为暂停到手动恢复
     Pause { dur: Option<Ms> },
     Resume,
-    /// 跳过：不清零，只推迟该轴
+    /// 按轴跳过；目前 UI 只用 SkipAny，保留给单测与后续「只跳过轻提醒」
+    #[allow(dead_code)]
     Skip { axis: Axis },
     /// 已起身：结算当前段并清零重计
     Dismiss,
     /// 托盘快捷操作：跳过当前所有挂起提醒（不清零）
     SkipAny,
     Fullscreen { on: bool },
+    /// 当前是否允许提醒（工作日 / 免打扰）；false 时只记时长，不触发、不耗配额
+    Active { on: bool },
     Midnight,
     /// 清空全部记录：由运行时拦截，清库并把计时器归零（不结算旧段）
     ClearAll,
@@ -94,6 +118,8 @@ pub struct Timer {
     activity: AxisState,
     alert: AxisState,
     present: bool,
+    /// 当前是否允许提醒（由运行时按工作日 / 免打扰投递）
+    active: bool,
     /// 外层 Some = 暂停中；内层 Some = 定时恢复，None = 手动恢复
     paused: Option<Option<Ms>>,
     fullscreen: bool,
@@ -111,6 +137,7 @@ impl Timer {
             activity: AxisState::default(),
             alert: AxisState::default(),
             present: true,
+            active: true,
             paused: None,
             fullscreen: false,
             suppressed: 0,
@@ -129,6 +156,11 @@ impl Timer {
 
     pub fn is_present(&self) -> bool {
         self.present
+    }
+
+    /// 当前是否因全屏播放而抑制提醒（设置关掉「全屏抑制」时恒为 false）
+    pub fn is_fullscreen(&self) -> bool {
+        self.fullscreen
     }
 
     pub fn alert_threshold(&self) -> Ms {
@@ -191,17 +223,20 @@ impl Timer {
                 }
                 if self.now.saturating_sub(self.last_upsert) >= MIN {
                     self.last_upsert = self.now;
-                    fx.push(Effect::UpsertSegment {
-                        start: self.seg_start,
-                        sitting: self.sitting,
-                    });
+                    // 刚开始就离座时 sitting 还是 0，别落一条零长度的段
+                    if self.sitting > 0 {
+                        fx.push(Effect::UpsertSegment {
+                            start: self.seg_start,
+                            sitting: self.sitting,
+                        });
+                    }
                 }
             }
             Event::Presence { present } => {
                 if self.present && !present {
                     // 离座即结算本段，计时停走
                     self.present = false;
-                    self.close_segment(&mut fx);
+                    self.close_segment(&mut fx, EndReason::Away);
                 } else if !self.present && present {
                     // 平台侧已按阈值过滤，回来即开新段
                     self.present = true;
@@ -226,7 +261,7 @@ impl Timer {
             }
             Event::Dismiss => {
                 // 已起身：结算当前段，重新开始
-                self.close_segment(&mut fx);
+                self.close_segment(&mut fx, EndReason::Dismiss);
                 self.restart_segment();
             }
             Event::Fullscreen { on } => {
@@ -247,8 +282,11 @@ impl Timer {
                     self.fullscreen = on;
                 }
             }
+            Event::Active { on } => {
+                self.active = on;
+            }
             Event::Midnight => {
-                self.close_segment(&mut fx);
+                self.close_segment(&mut fx, EndReason::Midnight);
                 self.seg_start = self.now;
                 self.sitting = 0;
                 self.last_upsert = self.now;
@@ -293,6 +331,14 @@ impl Timer {
 
         self.activity.accum += dt;
         self.alert.accum += dt;
+
+        // 非工作日 / 免打扰：坐姿照记、两轴节拍照走，但不触发提醒。
+        // 抑制必须落在状态机里：只在呈现层丢弃 Effect 的话，fire() 已经写掉
+        // awaiting/repeats/accum，会把「未响应重申」配额白白耗光。
+        // 恢复后 accum 已越过阈值，会自然补一条（与暂停恢复语义一致）。
+        if !self.active {
+            return;
+        }
 
         // 警戒优先：命中则吞掉同刻轻提醒并重置轻轴节拍
         let alert_due = self.due(Axis::Alert);
@@ -360,24 +406,44 @@ impl Timer {
         self.last_upsert = self.now;
     }
 
-    /// 退出前取走当前段并归零，返回 (时长, 连续时长)
+    /// 退出前取走当前段并归零；返回（段起点、本段坐姿时长）
     pub fn take_segment(&mut self) -> Option<(Ms, Ms)> {
         if self.sitting == 0 {
             return None;
         }
-        let out = (self.sitting, self.sitting);
+        let out = (self.seg_start, self.sitting);
         self.sitting = 0;
         self.activity = AxisState::default();
         self.alert = AxisState::default();
         Some(out)
     }
 
-    fn close_segment(&mut self, fx: &mut Vec<Effect>) {
+    /// 续接上一段：进程刚退出又启动时不要切断正在进行的坐姿。
+    /// `sitting` 是库里的累计值，本段起点视为「现在」，提醒节拍也按已坐时长挂上，
+    /// 否则坐了 2 小时再重启，又要从头等 45 分钟才提醒。
+    pub fn resume(&mut self, sitting: Ms) {
+        self.seg_start = self.now;
+        self.sitting = sitting;
+        self.activity = AxisState {
+            accum: sitting,
+            repeats: 0,
+            awaiting: false,
+        };
+        self.alert = AxisState {
+            accum: sitting,
+            repeats: 0,
+            awaiting: false,
+        };
+        self.last_upsert = self.now;
+    }
+
+    /// 段内没有离座，所以「连续时长」就等于本段坐姿时长，不再单独维护一列
+    fn close_segment(&mut self, fx: &mut Vec<Effect>, reason: EndReason) {
         if self.sitting > 0 {
             fx.push(Effect::CloseSegment {
                 start: self.seg_start,
                 sitting: self.sitting,
-                continuous: self.sitting,
+                reason,
             });
         }
     }
@@ -547,6 +613,36 @@ mod tests {
     }
 
     #[test]
+    fn segment_close_reason_is_recorded() {
+        let mut t = timer();
+        drive(&mut t, 0, 10 * MIN);
+        let fx = t.apply(Event::Presence { present: false });
+        assert!(
+            matches!(fx.as_slice(), [Effect::CloseSegment { reason: EndReason::Away, .. }]),
+            "离座结算要标记 away"
+        );
+
+        t.apply(Event::Presence { present: true });
+        drive(&mut t, 10 * MIN, 20 * MIN);
+        let fx = t.apply(Event::Dismiss);
+        assert!(
+            matches!(fx.as_slice(), [Effect::CloseSegment { reason: EndReason::Dismiss, .. }]),
+            "主动起身要标记 dismiss"
+        );
+
+        drive(&mut t, 20 * MIN, 30 * MIN);
+        let fx = t.apply(Event::Midnight);
+        assert!(
+            matches!(
+                fx.as_slice(),
+                [Effect::CloseSegment { reason: EndReason::Midnight, .. }, Effect::RolloverDay { .. }]
+            ),
+            "跨零点结算要标记 midnight"
+        );
+        assert_eq!(EndReason::Away.as_str(), "away");
+    }
+
+    #[test]
     fn midnight_closes_segment() {
         let mut t = timer();
         drive(&mut t, 0, 100 * MIN);
@@ -562,6 +658,37 @@ mod tests {
         let mut t = timer();
         let fx = drive(&mut t, 0, 5 * MIN);
         assert_eq!(upserts(&fx), 5);
+    }
+
+    #[test]
+    fn no_zero_length_upsert_when_starting_away() {
+        let mut t = timer();
+        // 启动时就已经离座：sitting 一直是 0，落库只能是空段
+        t.apply(Event::Presence { present: false });
+        let fx = drive(&mut t, 0, 5 * MIN);
+        assert_eq!(upserts(&fx), 0, "零长度段不应落库");
+    }
+
+    #[test]
+    fn resume_continues_segment_instead_of_splitting() {
+        let mut t = timer();
+        // 库里已有 20 分钟：重启后续接，不该从 0 重新算
+        t.resume(20 * MIN);
+        assert_eq!(t.sitting(), 20 * MIN);
+
+        // 续接后已经坐了 20 分钟，再过 25 分钟就该补一条轻提醒（45 分钟阈值）
+        let fx = drive(&mut t, 0, 25 * MIN);
+        assert_eq!(toasts(&fx), 1, "提醒节拍要按已坐时长挂上，不能重新等满 45 分钟");
+        assert_eq!(t.sitting(), 45 * MIN);
+        assert_eq!(t.take_segment(), Some((0, 45 * MIN)), "起点不变，时长接着累加");
+    }
+
+    #[test]
+    fn resume_long_segment_alerts_immediately() {
+        let mut t = timer();
+        t.resume(130 * MIN);
+        let fx = t.apply(Event::Tick { now: MIN });
+        assert_eq!(modals(&fx), 1, "已坐 130 分钟，重启后应立即补一条警戒");
     }
 
     #[test]
@@ -597,5 +724,35 @@ mod tests {
         assert_eq!(toasts(&fx) + modals(&fx), 0);
         t.apply(Event::Resume);
         assert!(!t.is_paused());
+    }
+
+    #[test]
+    fn inactive_days_do_not_consume_repeat_quota() {
+        let mut t = timer();
+        t.apply(Event::Active { on: false });
+        let fx = drive(&mut t, 0, 200 * MIN);
+        assert_eq!(toasts(&fx) + modals(&fx), 0, "非工作日不弹");
+        assert_eq!(t.sitting(), 200 * MIN, "但坐姿时长照记");
+
+        // 恢复后 accum 已越过阈值，警戒优先补一条；配额从恢复起算
+        t.apply(Event::Active { on: true });
+        let fx = drive(&mut t, 200 * MIN, 201 * MIN);
+        assert_eq!(modals(&fx), 1);
+        let fx = drive(&mut t, 201 * MIN, 212 * MIN);
+        assert_eq!(modals(&fx), 2, "5/10 分钟各重申一次，配额未被抑制期消耗");
+        let fx = drive(&mut t, 212 * MIN, 240 * MIN);
+        assert_eq!(modals(&fx), 0, "3 次用完后静默到 30 分钟窗口");
+    }
+
+    #[test]
+    fn inactive_keeps_axes_so_resume_fires_immediately() {
+        let mut t = timer();
+        drive(&mut t, 0, 8 * MIN);
+        t.apply(Event::Active { on: false });
+        drive(&mut t, 8 * MIN, 60 * MIN);
+        assert_eq!(t.next_activity_in(), 0, "节拍照走，恢复时已越过阈值");
+        t.apply(Event::Active { on: true });
+        let fx = drive(&mut t, 60 * MIN, 61 * MIN);
+        assert_eq!(toasts(&fx), 1, "恢复后立刻补一条轻提醒");
     }
 }
