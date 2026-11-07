@@ -66,6 +66,8 @@ const isRise = (s: SegRow) => s.closed && RISE_REASONS.includes(s.end_reason ?? 
 const DEMO = new URLSearchParams(window.location.search).get('demo') === '1'
 /** 设计稿预览：?demo=1&state=offday|quiet|paused|away 直接验收非提醒状态 */
 const DEMO_STATE = (new URLSearchParams(window.location.search).get('state') ?? 'on') as RemindState
+/** ?demo=1&hint=off 直接验收「首启说明已读」后的连胜 / 洞察状态行 */
+const DEMO_HINT_OFF = new URLSearchParams(window.location.search).get('hint') === 'off'
 
 const EMPTY_STATUS: Status = {
   idle_threshold_ms: 180000,
@@ -268,6 +270,16 @@ function compact(ms: number) {
   return h > 0
     ? { lead: String(h), unit: 'h', tail: String(m).padStart(2, '0') }
     : { lead: String(m), unit: 'm', tail: '' }
+}
+
+/** 连续达标天数：只数已经走完的日子，从最近一天倒着数。今日页与历史页共用，避免两处口径不一致 */
+function streakOf(days: DayRow[], goal: number) {
+  let n = 0
+  for (let i = days.length - 1; i >= 0; i--) {
+    if (days[i].rises >= goal) n++
+    else break
+  }
+  return n
 }
 
 function usedDays() {
@@ -498,10 +510,6 @@ export default function App() {
             act('dismiss')
             setToastAt(0)
           }}
-          onSkip={() => {
-            act('skip')
-            setToastAt(0)
-          }}
           onClose={() => setToastAt(0)}
         />
       )}
@@ -509,16 +517,14 @@ export default function App() {
   )
 }
 
-/** 右上角轻提醒：与 toast.png 一致，按钮直接操作计时 */
+/** 右上角轻提醒：只给一个主动作「已起身」；× 只收起卡片，不理它就会按重申节奏再来 */
 function Toast({
   sitting,
   onDone,
-  onSkip,
   onClose,
 }: {
   sitting: number
   onDone: () => void
-  onSkip: () => void
   onClose: () => void
 }) {
   return (
@@ -535,13 +541,10 @@ function Toast({
           ×
         </button>
       </div>
-      <p>{t('站起来走 1 分钟，或者做两个伸展。点「已起身」会把计时清零。')}</p>
+      <p>{t('站起来走 1 分钟，或者做两个伸展。点「已起身」会把计时清零，先忙就别管它。')}</p>
       <div className="toast-acts">
         <Button variant="dark" onClick={onDone}>
           {t('已起身')}
-        </Button>
-        <Button variant="ghost" onClick={onSkip}>
-          {t('跳过')}
         </Button>
       </div>
     </div>
@@ -653,9 +656,6 @@ function Dock({
         >
           <Icon name={status.paused ? 'play' : 'pause'} size={17} />
         </button>
-        <button className="dock-btn is-butter" title={t('跳过本次提醒')} onClick={() => act('skip')}>
-          <Icon name="skip" size={17} />
-        </button>
         <button className="dock-btn is-accent" title={t('已起身，清零重计')} onClick={() => act('dismiss')}>
           <Icon name="check" size={17} />
         </button>
@@ -731,6 +731,10 @@ function TodayView({
   act: (cmd: string, args?: Record<string, unknown>) => void
 }) {
   const [segs] = usePoll<SegRow[]>('segments', undefined, 15000, [], DEMO ? DEMO_SEGS : undefined)
+  const [trend] = usePoll<DayRow[]>('trend', { days: 8 }, 60000, [], DEMO ? DEMO_DAYS : undefined)
+  const [hintDone, setHintDone] = useState(
+    () => DEMO ? DEMO_HINT_OFF : localStorage.getItem('sitless.hint-dismissed') === '1',
+  )
   const [stageRef, stageMore] = useScrollHint<HTMLDivElement>()
   const [listRef, listMore] = useScrollHint<HTMLDivElement>()
   const state = status.remind_state
@@ -759,6 +763,26 @@ function TodayView({
   const longDur = compact(today.longest_ms)
   const tones = ['tl-mint', 'tl-sky', 'tl-butter', 'tl-lilac']
 
+  // 首页连胜 / 健康解读只看已经走完的近 7 天，和历史页同口径；今天不参与。
+  const on = todayIso()
+  const past = lastDays(8)
+    .filter((d) => d < on)
+    .slice(-7)
+    .map((day) => trend.find((r) => r.day === day) ?? {
+      day, sitting_ms: 0, longest_ms: 0, segments: 0, rises: 0, reminders: 0,
+    })
+  const streak = streakOf(past, Math.max(1, status.daily_goal))
+  const weekPeak = past.reduce((a, d) => Math.max(a, d.longest_ms), 0)
+  const insightParts: string[] = []
+  if (weekPeak > 0) insightParts.push(t('近 7 天最长一次连续坐了 {d}', { d: hm(weekPeak) }))
+  // 只有真正的新用户才需要规则说明；库里已有记录的老用户直接看数据
+  const hasHistory = trend.some((r) => r.day < on && r.sitting_ms > 0)
+  const showGuide = !hintDone && (DEMO || !hasHistory)
+  const dismissHint = () => {
+    if (!DEMO) localStorage.setItem('sitless.hint-dismissed', '1')
+    setHintDone(true)
+  }
+
   return (
     <>
       <div className={`stage${stageMore ? ' is-more' : ''}`} ref={stageRef}>
@@ -774,6 +798,30 @@ function TodayView({
               })}
               {copy ? ` ${t(copy.sub, { d: status.resume_hint })}` : ''}
             </p>
+            <div className={`today-hint${showGuide ? ' is-guide' : ''}`}>
+              <Icon name={showGuide ? 'play' : 'chart'} size={14} />
+              {showGuide ? (
+                <>
+                  <span>
+                    {t('走走已经开始记录：连续坐 {a} 分钟轻提醒一次，{b} 分钟弹出警戒窗。', {
+                      a: minutes(status.activity_interval_ms),
+                      b: minutes(status.alert_threshold_ms),
+                    })}
+                  </span>
+                  <button className="hint-x" onClick={dismissHint}>{t('知道了')}</button>
+                </>
+              ) : (
+                <>
+                  {streak > 0 && (
+                    <b className="hint-streak">{t('连续 {n} 天达标', { n: streak })}</b>
+                  )}
+                  {insightParts.length > 0 && <span>{insightParts.join(' · ')}</span>}
+                  {streak === 0 && insightParts.length === 0 && (
+                    <span>{t('还没有足够的数据。')}</span>
+                  )}
+                </>
+              )}
+            </div>
           </div>
         </header>
 
@@ -1037,11 +1085,7 @@ function HistoryView({ status }: { status: Status }) {
   const goal = Math.max(1, status.daily_goal)
   const okDays = cur.filter((d) => d.rises >= goal).length
 
-  let streak = 0
-  for (let i = cur.length - 1; i >= 0; i--) {
-    if (cur[i].rises >= goal) streak++
-    else break
-  }
+  const streak = streakOf(cur, goal)
 
   const diff = curTotal - prevTotal
   const flat = Math.abs(diff) < 60000
