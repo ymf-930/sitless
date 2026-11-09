@@ -211,6 +211,15 @@ function minutes(ms: number) {
 }
 
 /**
+ * 计时展示统一口径：只数已经坐满的整分钟，和 hm() 一样向下取整。
+ * minutes() 的 round 只用于配置整数与进度格，别拿它显示「已坐多久」，
+ * 否则 21 分半会一个显示 21、一个显示 22。
+ */
+function wholeMinutes(ms: number) {
+  return Math.max(0, Math.floor(ms / 60000))
+}
+
+/**
  * 活动提醒进度格：按间隔选粒度，让格数稳定在 7–15 根。
  * 一格一分钟只在小间隔下可读，45 分钟会变成 45 根细条，120 分钟连间距都放不下。
  */
@@ -747,14 +756,19 @@ function TodayView({
   const actTotal = Math.max(1, minutes(status.activity_interval_ms))
   const { unit: segUnit, count: segCount } = segSpec(actTotal)
   const passed = Math.round(Math.min(1, Math.max(0, 1 - nextAct / actTotal)) * segCount)
-  // 圆环读的是内存实时值（每秒刷），时间线读的是库里每分钟一次的快照，
-  // 续接上一段时库里还停在旧值。进行中的段一律改用 status.sitting_ms，两处同源。
+  // 圆环读的是内存实时值（每秒刷），DB 段快照每分钟才落一次、前端 15s 拉一次，
+  // 续接上一段时库里还停在旧值。进行中的段一律改用 status.sitting_ms，
+  // 时间线、标题、最长连续全部走这一份数据，别再各读各的。
   // 后端按 started_at DESC 返回：最新一段在前，右栏沿用这个顺序。
   const openIdx = segs.findIndex((s) => !s.closed)
   const liveMs = status.sitting_ms
   const ordered: SegRow[] = segs.map((s, i) =>
     i === openIdx ? { ...s, sitting_ms: liveMs } : s,
   )
+  // 标题是今日累计、圆环是当前这一段，单段时两者应完全相等；
+  // 最长连续取已闭合段的 DB 最大值与当前段实时值的较大者。
+  const liveTotalMs = ordered.reduce((a, s) => a + s.sitting_ms, 0)
+  const liveLongestMs = Math.max(today.longest_ms, openIdx >= 0 ? liveMs : 0)
   const rises = segs.filter(isRise).length
   const beginAt = ordered.length ? ordered[ordered.length - 1].started_at : null
   const started = beginAt ? clockOf(beginAt) : '—'
@@ -785,12 +799,12 @@ function TodayView({
         <header className="head view-head">
           <div>
             <div className="eyebrow">{dateLabel(today.day)}</div>
-            <h1>{t('今天坐了 {d}', { d: hm(today.sitting_ms) })}</h1>
+            <h1>{t('今天坐了 {d}', { d: hm(liveTotalMs) })}</h1>
             <p className="sub">
               {t('已记录 {a} 段，起身 {b} 次，最长连续 {d}。', {
                 a: today.segments,
                 b: rises,
-                d: hm(today.longest_ms),
+                d: hm(liveLongestMs),
               })}
               {copy ? ` ${t(copy.sub, { d: status.resume_hint })}` : ''}
             </p>
@@ -866,7 +880,7 @@ function TodayView({
               })}
             </svg>
             <div className="ring-mid">
-              <b>{minutes(status.sitting_ms)}</b>
+              <b>{wholeMinutes(status.sitting_ms)}</b>
               <span>{t('已坐 · 分钟')}</span>
             </div>
           </div>
