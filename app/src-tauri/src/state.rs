@@ -32,8 +32,8 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            activity_interval: 45 * MIN,
-            alert_threshold: 120 * MIN,
+            activity_interval: 30 * MIN,
+            alert_threshold: 60 * MIN,
             repeat_interval: 5 * MIN,
             repeat_limit: 3,
             quota_window: 30 * MIN,
@@ -420,7 +420,7 @@ impl Timer {
 
     /// 续接上一段：进程刚退出又启动时不要切断正在进行的坐姿。
     /// `sitting` 是库里的累计值，本段起点视为「现在」，提醒节拍也按已坐时长挂上，
-    /// 否则坐了 2 小时再重启，又要从头等 45 分钟才提醒。
+    /// 否则坐了 2 小时再重启，又要从头等满一个提醒间隔才提醒。
     pub fn resume(&mut self, sitting: Ms) {
         self.seg_start = self.now;
         self.sitting = sitting;
@@ -492,8 +492,24 @@ mod tests {
             .count()
     }
 
+    /// 单测验的是阈值逻辑，固定用 45/120 的刻度，不跟随产品默认值变化。
+    fn test_config() -> Config {
+        Config {
+            activity_interval: 45 * MIN,
+            alert_threshold: 120 * MIN,
+            ..Config::default()
+        }
+    }
+
     fn timer() -> Timer {
-        Timer::new(0, Config::default())
+        Timer::new(0, test_config())
+    }
+
+    #[test]
+    fn product_defaults_are_30_and_60() {
+        let c = Config::default();
+        assert_eq!(c.activity_interval, 30 * MIN, "活动提醒默认 30 分钟");
+        assert_eq!(c.alert_threshold, 60 * MIN, "久坐警戒默认 60 分钟");
     }
 
     #[test]

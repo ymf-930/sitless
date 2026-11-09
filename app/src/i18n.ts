@@ -293,11 +293,15 @@ const EN: Record<string, string> = {
   '高级': 'Advanced',
   '默认跟随系统，切换后立即生效': 'Follows the system by default; applies immediately',
   '（已设为不锁）': '(no lock)',
-  // 今日页：首启说明与数据洞察
+  // 今日页：一次性首启说明 + 两张跨天结论卡
   '走走已经开始记录：连续坐 {a} 分钟轻提醒一次，{b} 分钟弹出警戒窗。':
     'Zouzou is tracking now: a gentle nudge every {a} min, an always-on-top alert at {b} min.',
   '知道了': 'Got it',
-  '近 7 天最长一次连续坐了 {d}': 'Longest uninterrupted stretch in the last 7 days: {d}',
+  '连续达标': 'Days on goal',
+  '近 7 天最长连续': 'Longest stretch, last 7 days',
+  '每日目标 {n} 次起身': 'Daily goal: {n} breaks',
+  '今天最长 {d}': 'Today longest: {d}',
+  '满 1 天后开始统计': 'Available after the first full day',
   '站起来走 1 分钟，或者做两个伸展。点「已起身」会把计时清零，先忙就别管它。':
     'Walk for a minute or do two stretches. "I stood up" resets the timer; if you are busy, just ignore this.',
 }

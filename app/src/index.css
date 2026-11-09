@@ -153,6 +153,10 @@ button {
   scrollbar-width: none;
 }
 
+/* 纵向 flex 的子项默认可收缩：视口一矮，浏览器会先把卡片压扁而不是让
+   .stage 滚动；.alert 又是 overflow:hidden，标题会被裁掉。锁住子项高度。 */
+.stage > * { flex-shrink: 0; }
+
 /* 还能往下滚时底边淡出 28px：滚动条藏掉后，这是「下面还有内容」的唯一提示。
    滚到底或内容没溢出时（useScrollHint）这个词会被摘掉，不会误淡最后一张卡 */
 .stage.is-more,
@@ -226,15 +230,6 @@ button {
 }
 .today-hint > svg { flex: 0 0 auto; color: var(--muted); }
 .today-hint > span { min-width: 0; }
-.today-hint .hint-streak {
-  flex: 0 0 auto;
-  padding: 2px 9px;
-  border-radius: 8px;
-  background: rgba(142, 190, 120, .24);
-  color: #3f6b35;
-  font-weight: 700;
-  white-space: nowrap;
-}
 .today-hint .hint-x {
   flex: 0 0 auto;
   margin-left: auto;
@@ -1026,6 +1021,7 @@ body[data-win='alert'] #root {
 
 /* ---------- 统计块 ---------- */
 .tiles { gap: 10px; }
+.tiles.tiles-2 { grid-template-columns: repeat(2, 1fr); }
 .tile { position: relative; min-height: 96px; padding: 13px 15px; border-radius: var(--r-block); }
 .tile .tile-ico { position: absolute; top: 11px; right: 12px; color: rgba(12,12,12,.45); }
 .tile b { font-size: 26px; }
@@ -1044,9 +1040,17 @@ body[data-win='alert'] #root {
 .timeline { display: flex; flex-direction: column; gap: 9px; }
 
 /* 今日页右栏：分段多时时间线自己滚，标题与起身目标常驻不滚走 */
-.side-today { overflow: hidden; }
+.side-today {
+  overflow: hidden;
+  /* 原来目标卡紧贴窗口下边缘、方块行看着像被裁掉；留出呼吸空间，
+     也让它避开底部悬浮 dock 所在的高度带。与主区的 76px 滚动留白不同：
+     右栏内容不整栏滚动，24px 就够，再多会让右下角空一块 */
+  padding-bottom: 24px;
+}
 .side-today > * { flex: 0 0 auto; }
 .side-today .timeline {
+  /* 不设 grow：段数少时目标卡紧跟时间线，右栏下方与主区一起留白；
+     若撑满剩余高度，反而会在时间线与目标卡之间空出一大块 */
   flex: 0 1 auto;
   min-height: 0;
   overflow-y: auto;

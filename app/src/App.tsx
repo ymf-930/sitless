@@ -102,10 +102,10 @@ const DEMO_STATUS: Status = {
   sitting_ms: 42 * 60000,
   remind_state: DEMO_STATE,
   resume_hint: DEMO_STATE === 'quiet' ? '13:30' : '',
-  next_alert_ms: 78 * 60000,
+  next_alert_ms: 18 * 60000,
   next_activity_ms: 12 * 60000,
-  alert_threshold_ms: 120 * 60000,
-  activity_interval_ms: 45 * 60000,
+  alert_threshold_ms: 60 * 60000,
+  activity_interval_ms: 30 * 60000,
   repeat_interval_ms: 5 * 60000,
   repeat_limit: 3,
   daily_goal: 8,
@@ -756,11 +756,8 @@ function TodayView({
     i === openIdx ? { ...s, sitting_ms: liveMs } : s,
   )
   const rises = segs.filter(isRise).length
-  const reminders = today.reminders
   const beginAt = ordered.length ? ordered[ordered.length - 1].started_at : null
   const started = beginAt ? clockOf(beginAt) : '—'
-  const totalDur = compact(today.sitting_ms)
-  const longDur = compact(today.longest_ms)
   const tones = ['tl-mint', 'tl-sky', 'tl-butter', 'tl-lilac']
 
   // 首页连胜 / 健康解读只看已经走完的近 7 天，和历史页同口径；今天不参与。
@@ -773,8 +770,7 @@ function TodayView({
     })
   const streak = streakOf(past, Math.max(1, status.daily_goal))
   const weekPeak = past.reduce((a, d) => Math.max(a, d.longest_ms), 0)
-  const insightParts: string[] = []
-  if (weekPeak > 0) insightParts.push(t('近 7 天最长一次连续坐了 {d}', { d: hm(weekPeak) }))
+  const weekDur = compact(weekPeak)
   // 只有真正的新用户才需要规则说明；库里已有记录的老用户直接看数据
   const hasHistory = trend.some((r) => r.day < on && r.sitting_ms > 0)
   const showGuide = !hintDone && (DEMO || !hasHistory)
@@ -798,30 +794,18 @@ function TodayView({
               })}
               {copy ? ` ${t(copy.sub, { d: status.resume_hint })}` : ''}
             </p>
-            <div className={`today-hint${showGuide ? ' is-guide' : ''}`}>
-              <Icon name={showGuide ? 'play' : 'chart'} size={14} />
-              {showGuide ? (
-                <>
-                  <span>
-                    {t('走走已经开始记录：连续坐 {a} 分钟轻提醒一次，{b} 分钟弹出警戒窗。', {
-                      a: minutes(status.activity_interval_ms),
-                      b: minutes(status.alert_threshold_ms),
-                    })}
-                  </span>
-                  <button className="hint-x" onClick={dismissHint}>{t('知道了')}</button>
-                </>
-              ) : (
-                <>
-                  {streak > 0 && (
-                    <b className="hint-streak">{t('连续 {n} 天达标', { n: streak })}</b>
-                  )}
-                  {insightParts.length > 0 && <span>{insightParts.join(' · ')}</span>}
-                  {streak === 0 && insightParts.length === 0 && (
-                    <span>{t('还没有足够的数据。')}</span>
-                  )}
-                </>
-              )}
-            </div>
+            {showGuide && (
+              <div className="today-hint is-guide">
+                <Icon name="play" size={14} />
+                <span>
+                  {t('走走已经开始记录：连续坐 {a} 分钟轻提醒一次，{b} 分钟弹出警戒窗。', {
+                    a: minutes(status.activity_interval_ms),
+                    b: minutes(status.alert_threshold_ms),
+                  })}
+                </span>
+                <button className="hint-x" onClick={dismissHint}>{t('知道了')}</button>
+              </div>
+            )}
           </div>
         </header>
 
@@ -908,43 +892,36 @@ function TodayView({
           <img className="next-art" src={activityArt()} alt="" />
         </section>
 
-        <div className="tiles">
+        <div className="tiles tiles-2">
           <div className="tile t-mint">
             <span className="tile-ico">
-              <Icon name="clock" size={19} />
+              <Icon name="check" size={19} />
             </span>
             <b>
-              {totalDur.lead}
-              <small>{totalDur.unit}</small>
-              {totalDur.tail}
+              {hasHistory ? streak : '—'}
+              {hasHistory && <small>{t('天')}</small>}
             </b>
-            <span>{t('坐姿总时长')}</span>
+            <span>{t('连续达标')}</span>
+            <em className="tile-tag">
+              {hasHistory
+                ? t('每日目标 {n} 次起身', { n: status.daily_goal })
+                : t('满 1 天后开始统计')}
+            </em>
           </div>
           <div className="tile t-sky">
             <span className="tile-ico">
               <Icon name="chart" size={19} />
             </span>
             <b>
-              {longDur.lead}
-              <small>{longDur.unit}</small>
-              {longDur.tail}
+              {weekPeak > 0 ? weekDur.lead : '—'}
+              {weekPeak > 0 && <><small>{weekDur.unit}</small>{weekDur.tail}</>}
             </b>
-            <span>{t('最长连续')}</span>
-          </div>
-          <div className="tile t-butter">
-            <span className="tile-ico">
-              <Icon name="bell" size={19} />
-            </span>
-            <b>{reminders}</b>
-            <span>{t('提醒次数')}</span>
-          </div>
-          <div className="tile t-dash">
-            <span className="tile-ico">
-              <Icon name="person" size={19} />
-            </span>
-            <b>{rises}</b>
-            <span>{t('起身次数')}</span>
-            <em className="tile-tag">{t('今日目标 {n}', { n: status.daily_goal })}</em>
+            <span>{t('近 7 天最长连续')}</span>
+            <em className="tile-tag">
+              {weekPeak > 0
+                ? t('今天最长 {d}', { d: hm(today.longest_ms) })
+                : t('满 1 天后开始统计')}
+            </em>
           </div>
         </div>
       </div>
