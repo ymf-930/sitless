@@ -260,7 +260,7 @@ pnpm exec tauri dev
 │   ├── src/                  ← 前端：main.tsx / App.tsx / Alert.tsx / TrayMenu.tsx / i18n.ts / art.ts / icons.tsx / ui/ / index.css
 │   ├── src-tauri/            ← 后端：src/*.rs、tauri.conf.json、capabilities/、icons/、sounds/
 │   ├── public/               ← 运行时静态资源：logo.png、cal.png、art/（12 张 3D 人物插画 + 2 张循环 GIF）
-│   ├── scripts/              ← 可复用脚本：make_sounds / make_logo / export_icons / check_classes
+│   ├── scripts/              ← 可复用脚本：make_sounds / make_logo / export_icons / export_platform_icons / check_classes
 │   ├── dist/                 ← 前端构建产物（会被打进 exe）
 │   └── package.json / pnpm-lock.yaml
 ├── design/                   ← 设计资料，只有一个入口
@@ -367,7 +367,8 @@ main.rs → lib.rs(run)
 | 托盘菜单 | `app/src/TrayMenu.tsx`（菜单项）+ `lib.rs` `tray_action`（分发） |
 | 提示音 | `app/src-tauri/sounds/*.wav` + `sound.rs`（`include_bytes!` 编译进二进制） |
 | 日志与排障 | `lib.rs` 的 log 插件配置；release 日志在 `%LOCALAPPDATA%/app.sitless.desktop/logs/sitless.log`；设置页「诊断信息」导出快照 |
-| 应用图标 | `app/scripts/make_logo.py` → Chrome 栅格化 → `export_icons.py`（需 Pillow）→ `src-tauri/icons/` |
+| 应用图标 | `app/scripts/make_logo.py` → Edge 栅格化 `design/logo/mark.png` → `export_icons.py`（Windows / 前端，需 Pillow）→ `app/public/logo.png` + `src-tauri/icons/*.png` + `icon.ico`；`export_platform_icons.py` 另出 `icon.icns` / `ios/` / `android/` |
+| 安装包与卸载图标 | `tauri.conf.json` 的 `bundle.windows.nsis.installerIcon` / `uninstallerIcon`，均指向 `icons/icon.ico`（分别映射到 NSIS 模板的 `MUI_ICON` / `MUI_UNICON`；注意 NSIS 配置在 `windows` 下，不是 `bundle` 顶层） |
 
 **新增一个配置项**要走四处：`prefs.rs`（常量 / 字段 / `from_db` / `set` / `persist`）→ `runtime.rs`（`Snapshot` 字段 + `snapshot()`）→ `App.tsx` 或 `Alert.tsx`（UI）→ 落库验证。
 
@@ -389,7 +390,7 @@ Tauri 2 的 JS 窗口 API 受 ACL 管控，清单在 `app/src-tauri/capabilities
 6. **窗口跑到屏幕外**：定位要用物理像素 `PhysicalPosition`，逻辑/物理混算在非 100% 缩放下会偏移。
 7. **警戒窗出现即被关掉**：WebView2 会在窗口 show/focus 时补发伪点击，`Alert.tsx` 用 `armedAt`（5 秒内须有真实 pointerdown）防御，别删。
 8. **release 打包看似卡死**：别用 `pnpm tauri build 2>&1 | tail -60`（管道缓冲），改成 `> build_release.log 2>&1`。
-9. **换 logo 后图标没变**：Windows 图标缓存，需重启资源管理器或清理 `%LOCALAPPDATA%\IconCache.db`。
+9. **换 logo 后图标没变**：先看 Windows 图标缓存（重启资源管理器或清理 `%LOCALAPPDATA%\IconCache.db`）；若 exe 里仍嵌旧 ico，是 `tauri-winres` 只比对 `resource.rc` 文本、ico 内容变化不触发重编，打包前删 `target/release/build/sitless-*/out/resource.lib|rc` 并 `touch src-tauri/build.rs`。改完记得跑 `export_icons.py` + `export_platform_icons.py`，否则 macOS / 移动端资源会留在旧稿。
 10. **ACL 权限缺失无报错**：见上一节，先查 `capabilities/default.json`。
 
 更完整的过程记录与决策背景见 `.workbuddy/memory/2026-11-04.md`、`2026-11-05.md`。
