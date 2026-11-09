@@ -162,8 +162,8 @@ const EN: Record<string, string> = {
   '操作检测提示音': 'Presence beep',
   '收进托盘': 'Minimize to tray',
   '改完立即生效，不需要重启应用。': 'Changes apply immediately; no restart needed.',
-  '数据存在本地 SQLite，不上传、不联网。改过的配置也存同一份库。':
-    'Data stays in a local SQLite file; nothing is uploaded. Settings live in the same file.',
+  '记录只在这台电脑上，不上传、不联网。':
+    'Records stay on this computer only. Nothing is uploaded; no internet connection is used.',
   '新时段开始': 'New segment started',
   '新时段结束': 'New segment end',
   '无': 'None',
@@ -291,6 +291,7 @@ const EN: Record<string, string> = {
   '需先打开上面的「休息前确认」': 'Requires "Confirm before break" above',
   '预览': 'Preview',
   '高级': 'Advanced',
+  '提醒节奏': 'Reminder cadence',
   '默认跟随系统，切换后立即生效': 'Follows the system by default; applies immediately',
   '（已设为不锁）': '(no lock)',
   // 今日页：一次性首启说明 + 两张跨天结论卡

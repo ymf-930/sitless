@@ -1121,6 +1121,32 @@ body[data-win='alert'] #root {
 .tone-row button.is-on { background: var(--ink); color: #fff; border-color: var(--ink); }
 .adv-card { padding: 14px 18px; }
 .adv-body { gap: 0; margin-top: 12px; padding-top: 0; border-top: 1px dashed var(--hair); }
+/* 高级里的「提醒节奏」子组：三项低频调参默认折叠，让主层只留常用开关 */
+.adv-group {
+  margin: 8px 0;
+  border: 1px solid rgba(20, 20, 20, .06);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, .65);
+  overflow: hidden;
+}
+.adv-group-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 13px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.adv-group-head .count { font-size: 10.5px; font-weight: 400; color: var(--muted); margin-right: auto; }
+.adv-group-head .chev { color: var(--muted); transition: transform 0.18s ease; }
+.adv-group-head.is-open .chev { transform: rotate(180deg); }
+.adv-group-body { padding: 0 13px 2px; border-top: 1px dashed var(--hair); }
 .adv-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px dashed var(--hair); }
 .adv-row:last-child { border-bottom: 0; }
 /* 高级行里的步进器：比设置页那张大数字卡小一号 */
@@ -1156,7 +1182,18 @@ body[data-win='alert'] #root {
 .kv-row span { font-size: 11.5px; color: #7d7d73; }
 .kv-row b { margin-left: auto; font-size: 12.5px; font-weight: 600; }
 .kv-row b i { font-style: normal; font-size: 10px; color: var(--muted-2); margin-left: 3px; font-weight: 500; }
-.side-note { font-size: 10.5px; color: var(--muted); line-height: 1.6; padding: 6px 2px 8px; }
+/* 隐私承诺：独立成块，不再当「当前配置」列表的脚注。
+   配色与首启说明条同源；底部 24px 留白让滚动到底时也不会贴住窗口下边缘。 */
+.privacy-note {
+  margin: 4px 0 24px;
+  padding: 10px 13px;
+  border: 1px solid #e8efdd;
+  border-radius: 14px;
+  background: #f4f8ee;
+  color: var(--ink-2);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
 
 /* ---------- 警戒置顶窗（补齐缺失样式，浅色卡片） ---------- */
 body[data-win='alert'] .alertwin {

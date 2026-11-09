@@ -1348,6 +1348,7 @@ function SliderCard({
 function SettingsView({ status }: { status: Status }) {
   const [stageRef, stageMore] = useScrollHint<HTMLDivElement>()
   const [adv, setAdv] = useState(false)
+  const [rhythm, setRhythm] = useState(false)
   const [volume, setVolume] = useState(() =>
     DEMO ? Number(localStorage.getItem('sitless.volume') ?? 62) : status.volume,
   )
@@ -1710,7 +1711,7 @@ function SettingsView({ status }: { status: Status }) {
         <div className="card adv-card">
           <button className={`adv-head${adv ? ' is-open' : ''}`} onClick={() => setAdv(!adv)}>
             <h4>{t('高级')}</h4>
-            <span className="count">{t('{n} 项', { n: 9 })}</span>
+            <span className="count">{t('{n} 项', { n: 7 })}</span>
             <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M6 9l6 6 6-6" />
             </svg>
@@ -1735,57 +1736,71 @@ function SettingsView({ status }: { status: Status }) {
                 </div>
                 <Switch checked={status.action_beep} onChange={() => save('action_beep', status.action_beep ? 0 : 1)} label={t('切换操作检测提示音')} />
               </div>
-              <div className="adv-row">
-                <div>
-                  <h4>{t('未响应重复间隔')}</h4>
-                  <div className="hint">{t('提醒被忽略后，隔多久再弹一次')}</div>
-                </div>
-                <Stepper
-                  value={minutes(status.repeat_interval_ms)}
-                  min={1}
-                  max={30}
-                  onChange={(v) => save('repeat_interval_min', v)}
-                >
-                  {minutes(status.repeat_interval_ms)}
-                  <i>{t('分钟')}</i>
-                </Stepper>
-              </div>
-              <div className="adv-row">
-                <div>
-                  <h4>{t('未响应重申次数')}</h4>
-                  <div className="hint">{t('同一轮提醒最多弹几次，之后静默')}</div>
-                </div>
-                <Stepper value={status.repeat_limit} min={1} max={6} onChange={(v) => save('repeat_limit', v)}>
-                  {status.repeat_limit}
-                  <i>{t('次')}</i>
-                </Stepper>
-              </div>
-              <div className="adv-row">
-                <div>
-                  <h4>{t('警戒窗强制倒计时')}</h4>
-                  <div className="hint">
-                    {status.confirm_before_rest
-                      ? (status.alert_seconds > 0 ? t('倒计时结束前不能清零重计；关闭和暂停随时可用') : t('当前不锁，出现即可清零重计'))
-                      : t('需先打开上面的「休息前确认」')}
+              {/* 三项低频调参默认收起：主层只留常用开关，已存的用户配置不受影响 */}
+              <div className="adv-group">
+                <button className={`adv-group-head${rhythm ? ' is-open' : ''}`} onClick={() => setRhythm(!rhythm)}>
+                  <span>{t('提醒节奏')}</span>
+                  <span className="count">{t('{n} 项', { n: 3 })}</span>
+                  <svg className="chev" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M6 9l6 6 6-6" />
+                  </svg>
+                </button>
+                {rhythm && (
+                  <div className="adv-group-body">
+                    <div className="adv-row">
+                      <div>
+                        <h4>{t('未响应重复间隔')}</h4>
+                        <div className="hint">{t('提醒被忽略后，隔多久再弹一次')}</div>
+                      </div>
+                      <Stepper
+                        value={minutes(status.repeat_interval_ms)}
+                        min={1}
+                        max={30}
+                        onChange={(v) => save('repeat_interval_min', v)}
+                      >
+                        {minutes(status.repeat_interval_ms)}
+                        <i>{t('分钟')}</i>
+                      </Stepper>
+                    </div>
+                    <div className="adv-row">
+                      <div>
+                        <h4>{t('未响应重申次数')}</h4>
+                        <div className="hint">{t('同一轮提醒最多弹几次，之后静默')}</div>
+                      </div>
+                      <Stepper value={status.repeat_limit} min={1} max={6} onChange={(v) => save('repeat_limit', v)}>
+                        {status.repeat_limit}
+                        <i>{t('次')}</i>
+                      </Stepper>
+                    </div>
+                    <div className="adv-row">
+                      <div>
+                        <h4>{t('警戒窗强制倒计时')}</h4>
+                        <div className="hint">
+                          {status.confirm_before_rest
+                            ? (status.alert_seconds > 0 ? t('倒计时结束前不能清零重计；关闭和暂停随时可用') : t('当前不锁，出现即可清零重计'))
+                            : t('需先打开上面的「休息前确认」')}
+                        </div>
+                      </div>
+                      <Stepper
+                        value={status.alert_seconds}
+                        min={0}
+                        max={120}
+                        step={5}
+                        disabled={!status.confirm_before_rest}
+                        onChange={(v) => save('alert_seconds', v)}
+                      >
+                        {status.alert_seconds > 0 ? (
+                          <>
+                            {status.alert_seconds}
+                            <i>{t('秒')}</i>
+                          </>
+                        ) : (
+                          t('不锁')
+                        )}
+                      </Stepper>
+                    </div>
                   </div>
-                </div>
-                <Stepper
-                  value={status.alert_seconds}
-                  min={0}
-                  max={120}
-                  step={5}
-                  disabled={!status.confirm_before_rest}
-                  onChange={(v) => save('alert_seconds', v)}
-                >
-                  {status.alert_seconds > 0 ? (
-                    <>
-                      {status.alert_seconds}
-                      <i>{t('秒')}</i>
-                    </>
-                  ) : (
-                    t('不锁')
-                  )}
-                </Stepper>
+                )}
               </div>
               <div className="adv-row">
                 <div>
@@ -1905,7 +1920,7 @@ function SettingsView({ status }: { status: Status }) {
             <b>{autostart ? t('开启') : t('关闭')}</b>
           </div>
         </div>
-        <p className="side-note">{t('数据存在本地 SQLite，不上传、不联网。改过的配置也存同一份库。')}</p>
+        <p className="privacy-note">{t('记录只在这台电脑上，不上传、不联网。')}</p>
       </aside>
     </>
   )
