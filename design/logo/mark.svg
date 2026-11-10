@@ -20,9 +20,11 @@
         <path d="M690 520 L750 706" stroke-width="56"/>
       </g>
       <g stroke="#c9ef9f">
+        <path d="M661.0 402.6 L636 462" stroke-width="50"/>
         <path d="M730.1 396.9 L780 470" stroke-width="52"/>
       </g>
       <g stroke="#0c0c0c">
+        <path d="M668 386 L636 462" stroke-width="34"/>
         <path d="M720 382 L780 470" stroke-width="36"/>
       </g>
   </g>

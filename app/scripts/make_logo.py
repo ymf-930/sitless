@@ -1,7 +1,8 @@
-"""生成「走走」图标：超椭圆底 + 人站在空椅旁（正式定稿）。
+"""生成「走走」图标：超椭圆底 + 人站在空椅旁（正式定稿，双臂版）。
 
 正式链路：design/logo/mark.svg → 栅格化出 mark.png → export_icons.py 导出各尺寸。
-坐姿旧稿归档在 design/logo/sit.svg / sit.png / sit-icons/，需要回滚直接覆盖回来即可。
+坐姿旧稿归档在 design/logo/sit.svg / sit.png / sit-icons/；
+单臂站姿定稿归档在 design/logo/stand-one-arm.svg / .png，需要回滚直接覆盖回来即可。
 
 用法：python scripts/make_logo.py [h|gh|a|b|c]
 注意：mark.svg 的缩放偏移是手工微调过的定稿值，脚本用 TRANSFORM 固定它，
@@ -30,13 +31,18 @@ LEGS = [                                      # 两条 V 形落地腿
     [(690, 520), (650, 706)],
     [(690, 520), (750, 706)],
 ]
-ARM = [(720, 382), (780, 470)]                # 从躯干侧边斜向下垂
 BACK = [(368, 344), (368, 716)]               # 椅背 + 后腿（一根竖线）
 SEAT = [(368, 596), (560, 596)]               # 坐板（右端落在前腿上）
 FRONT = [(560, 596), (560, 716)]              # 前腿
 
+# 双臂（2026-11-10 用户选 B）：右臂沿用定稿斜垂，左臂短垂贴身。
+# 左臂末端 x=636 与椅子前腿 x=560 留足间距，避免 26px 粘连；完全镜像会糊在一起。
+ARMS: list[tuple[list[tuple[int, int]], int]] = [
+    ([(668, 386), (636, 462)], 34),           # 左臂：短、贴身
+    ([(720, 382), (780, 470)], 36),           # 右臂：从躯干侧边斜向下垂
+]
+
 BODY_W = 56
-ARM_W = 36
 ARM_HALO_INSET = 18                           # 底色缝起点内插，避免在肩部横切躯干
 CHAIR_W = 46
 
@@ -74,7 +80,8 @@ def auto_transform() -> str:
     xs += [hx - hr, hx + hr]
     ys += [hy - hr, hy + hr]
     segs = ([(TORSO, BODY_W)] + [(leg, BODY_W) for leg in LEGS]
-            + [(ARM, ARM_W), (BACK, CHAIR_W), (SEAT, CHAIR_W), (FRONT, CHAIR_W)])
+            + [(arm, w) for arm, w in ARMS]
+            + [(BACK, CHAIR_W), (SEAT, CHAIR_W), (FRONT, CHAIR_W)])
     for seg, w in segs:
         for x, y in seg:
             xs += [x - w / 2, x + w / 2]
@@ -111,12 +118,18 @@ def main() -> None:
          f' fill="{pal["person"]}" stroke="none"/>']
         + [line(s, BODY_W) for s in body_segs]
     )
-    (ax, ay), (bx, by) = ARM[0], ARM[1]
-    t = ARM_HALO_INSET / ((bx - ax) ** 2 + (by - ay) ** 2) ** 0.5
-    arm_halo = (f'<path d="M{ax + (bx - ax) * t:.1f} {ay + (by - ay) * t:.1f}'
-                + ''.join(f' L{x} {y}' for x, y in ARM[1:])
-                + f'" stroke-width="{ARM_W + 16}"/>')
-    arm = line(ARM, ARM_W)
+    arm_halos, arm_paths = [], []
+    for segment, width in ARMS:
+        (ax, ay), (bx, by) = segment
+        t = ARM_HALO_INSET / ((bx - ax) ** 2 + (by - ay) ** 2) ** 0.5
+        arm_halos.append(
+            f'<path d="M{ax + (bx - ax) * t:.1f} {ay + (by - ay) * t:.1f}'
+            + ''.join(f' L{x} {y}' for x, y in segment[1:])
+            + f'" stroke-width="{width + 16}"/>'
+        )
+        arm_paths.append(line(segment, width))
+    arm_halo = "\n        ".join(arm_halos)
+    arm = "\n        ".join(arm_paths)
 
     svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="{SIZE}" height="{SIZE}" viewBox="0 0 {SIZE} {SIZE}">
   <path d="{squircle_path(SIZE, N)}" fill="{BG}"/>
