@@ -894,7 +894,7 @@ function TodayView({
             </span>
             <h3>{copy ? t('提醒已关闭') : nextAct <= 0 ? t('下一次提醒马上就到') : t('下一次提醒在 {n} 分钟后', { n: nextAct })}</h3>
             <div className="next-meta-row">
-              <span className="next-meta">{copy ? t(copy.sub, { d: status.resume_hint }) : t('右上角轻提示，不抢焦点，不响铃打断。')}</span>
+              {copy && <span className="next-meta">{t(copy.sub, { d: status.resume_hint })}</span>}
               <span className="segs-scale">{t('每格 {n} 分钟', { n: segUnit })}</span>
             </div>
             <div className={`segs${silent ? ' is-silent' : ''}`}>

@@ -102,7 +102,6 @@ const EN: Record<string, string> = {
   '历史': 'History',
   '取消': 'Cancel',
   '可以清零重计了': 'You can reset the timer now',
-  '右上角轻提示，不抢焦点，不响铃打断。': 'A subtle toast in the top right; no focus steal, no interruption.',
   '同一轮提醒最多弹几次，之后静默': 'Max repeats in one cycle before going silent',
   '周一': 'Mon',
   '周三': 'Wed',
