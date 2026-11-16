@@ -14,6 +14,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 
+# Windows 的非交互终端默认 cp1252/cp936，打印中文会 UnicodeEncodeError（CI 上踩过）。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 
 def used_classes() -> set[str]:
     text = "\n".join(p.read_text(encoding="utf-8") for p in SRC.glob("*.tsx"))
