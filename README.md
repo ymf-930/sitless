@@ -14,6 +14,11 @@
 
 ---
 
+<div align="center">
+  <img src="design/screenshots/desktop-today.png" width="100%" alt="桌面端 · 今日页">
+  <sub>桌面端 · 今日页</sub>
+</div>
+
 ## 这是什么
 
 同一个产品的两种形态，共用一套视觉与计时口径，**数据互不相通**：
@@ -25,11 +30,6 @@
 | 提醒 | 30 分钟轻提醒 + 60 分钟置顶警戒窗 | 60 分钟警戒通知，工具栏徽标常驻倒计时 |
 | 数据 | 本地 SQLite，保留历史 | `chrome.storage.local`，只存当天 |
 | 适合 | 一整天在电脑前工作 | 主要在浏览器里工作，不想装软件 |
-
-<div align="center">
-  <img src="design/screenshots/desktop-today.png" width="49%" alt="桌面端今日页">
-  <img src="design/screenshots/ext-main.png" width="34%" alt="扩展 popup">
-</div>
 
 ## 功能
 
@@ -48,11 +48,6 @@
 - 历史页：日均、达标天数、环比、时段分布热力图、逐日明细
 - 系统托盘、开机自启、CSV 导出、界面中英文、主题色
 
-<div align="center">
-  <img src="design/screenshots/desktop-history.png" width="49%" alt="历史页">
-  <img src="design/screenshots/desktop-settings.png" width="49%" alt="设置页">
-</div>
-
 ## 安装
 
 ### 桌面端（Windows）
@@ -62,6 +57,12 @@
 > 数据在 `%APPDATA%\app.sitless.desktop\sitless.db`，卸载不会删除。详细用法见 [桌面端手册](docs/desktop-guide.md)。
 
 ### 浏览器扩展（Chrome / Edge）
+
+<div align="center">
+  <img src="design/screenshots/ext-main.png" width="300" alt="扩展 popup">
+  <br>
+  <sub>点工具栏图标打开的 popup</sub>
+</div>
 
 到 Releases 下载 `sitless-extension.zip`，解压后：
 
@@ -91,7 +92,7 @@
 │
 ├─ design/                 设计资源
 │  ├─ logo/                图标唯一源头：mark.svg + 生成脚本，见其中的 README
-│  ├─ screenshots/         本 README 用到的成品截图
+│  ├─ screenshots/         成品截图（README 用两张，其余备用）
 │  ├─ assets/              3D 插画源文件
 │  ├─ source/              第三方素材包与原始压缩包，不入库
 │  └─ prototype.html       早期静态原型
@@ -115,7 +116,7 @@ python design/logo/export_platform_icons.py # → icns / ios / android
 
 | 目录 | 内容 | 是否入库 |
 |---|---|---|
-| `design/screenshots/` | 只为 README 保留的成品截图 | 是 |
+| `design/screenshots/` | 成品截图：桌面三页 + 扩展四态 | 是 |
 | `design/assets/` | 界面里用到的 3D 插画 | 是 |
 | `design/source/` | 第三方素材包、原始 zip | 否（体积大） |
 | `app/public/art/` | 桌面端运行时读取的插画副本 | 是 |
