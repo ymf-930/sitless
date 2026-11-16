@@ -1,0 +1,26 @@
+{
+  "name": "zouzou-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build && esbuild src/sw.ts --bundle --format=iife --target=chrome120 --outfile=dist/sw.js --minify && node scripts/zip.mjs",
+    "verify": "tsc --noEmit && npm run build",
+    "test": "npm run build && node scripts/verify.mjs"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.1",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.1.0",
+    "esbuild": "^0.25.0",
+    "typescript": "~5.9.0",
+    "vite": "^7.2.0"
+  }
+}
