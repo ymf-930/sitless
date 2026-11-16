@@ -530,10 +530,16 @@ mod tests {
         Db::in_memory().unwrap()
     }
 
+    /// reminder_recent 只取最近 N 天，测试里的日期必须跟着今天走，否则过几天就滑出窗口。
+    fn today() -> String {
+        chrono::Local::now().format("%Y-%m-%d").to_string()
+    }
+
     #[test]
     fn reminder_records_style_and_migrates_legacy_table() {
         let db = db();
-        db.log_reminder("2026-11-06", "light", "2026-11-06T10:00:00", 2).unwrap();
+        let day = today();
+        db.log_reminder(&day, "light", &format!("{day}T10:00:00"), 2).unwrap();
         let rows = db.reminder_recent(7).unwrap();
         assert_eq!(rows.len(), 1);
         assert!(rows[0].contains("style=2"), "应记录提醒窗口形态: {}", rows[0]);
@@ -556,7 +562,8 @@ mod tests {
         assert_eq!(user_version(&conn).unwrap(), SCHEMA_VERSION);
 
         let legacy = Db { conn: Mutex::new(conn) };
-        legacy.log_reminder("2026-11-06", "alert", "2026-11-06T11:00:00", 0).unwrap();
+        let day = today();
+        legacy.log_reminder(&day, "alert", &format!("{day}T11:00:00"), 0).unwrap();
         assert_eq!(legacy.reminder_recent(7).unwrap().len(), 1, "旧表补齐列后仍可写入");
 
         // 已闭合的普通老段记 unknown（历史口径），未闭合的记 open，

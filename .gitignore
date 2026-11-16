@@ -1,24 +1,23 @@
 # 依赖与构建产物（体积大、可重新生成）
 node_modules/
 app/node_modules/
+extension/node_modules/
 app/dist/
+extension/dist/
 app/src-tauri/target/
 app/src-tauri/gen/schemas/
 
-# 构建与检查日志
+# 日志
 *.log
 
-# 交付物：安装包不进版本库，发布时单独同步
+# 交付物：桌面安装包与扩展 zip 走 Release 发布，不入库
 走走_*.exe
-
-# 设计素材原始压缩包与解压目录（第三方素材，重新下载即可，不入库）
 *.zip
-3D人物插画/
-3d人物图/
-【BIGD】黏土类3D图标 (1)/
-页面风格参考/
 
-# 一次性验证产物归档
+# 设计素材统一目录：第三方资源包与原始压缩包，不入库
+design/source/
+
+# 本地归档：候选稿、一次性验证产物
 .archive/
 
 # 工具与系统
