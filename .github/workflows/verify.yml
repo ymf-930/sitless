@@ -1,0 +1,69 @@
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  extension:
+    name: 浏览器扩展
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: extension
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: extension/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      # tsc --noEmit → 构建 → 在 mock 的 Chrome API 上跑逻辑断言
+      - run: pnpm test
+
+  desktop:
+    name: 桌面端
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: app
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+
+      - run: pnpm install --frozen-lockfile
+
+      # 前端构建 / oxlint / CSS 类名 / i18n 词条 / cargo test
+      - run: pnpm verify
