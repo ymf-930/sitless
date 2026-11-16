@@ -15,6 +15,13 @@ import sys
 APP = pathlib.Path(__file__).resolve().parents[1]
 TAURI = APP / "src-tauri"
 
+# Windows 的非交互终端默认用 cp1252/cp936，打印中文会 UnicodeEncodeError（CI 上踩过）。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 
 def run(name: str, command: str, cwd: pathlib.Path) -> bool:
     print(f"\n=== {name} ===")
