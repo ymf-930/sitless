@@ -10,6 +10,8 @@
 
 [桌面端](#桌面端-windows) · [浏览器扩展](#浏览器扩展-chrome--edge) · [目录结构](#目录结构) · [开发](#开发) · [桌面端手册](docs/desktop-guide.md)
 
+<img src="https://github.com/ymf-930/sitless/actions/workflows/verify.yml/badge.svg" alt="verify"> <img src="https://img.shields.io/badge/license-MIT-4e7040" alt="MIT">
+
 </div>
 
 ---
